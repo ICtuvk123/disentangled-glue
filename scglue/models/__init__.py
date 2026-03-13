@@ -19,7 +19,7 @@ from .base import Model
 from .dx import integration_consistency
 from .nn import autodevice
 from .scclue import SCCLUEModel
-from .scglue import PairedSCGLUEModel, SCGLUEModel
+from .scglue import DisentangledSCGLUEModel, PairedSCGLUEModel, SCGLUEModel
 
 
 @logged
@@ -184,19 +184,22 @@ def fit_SCGLUE(
     model
         Model class, must be one of
         {:class:`scglue.models.scglue.SCGLUEModel`,
-        :class:`scglue.models.scglue.PairedSCGLUEModel`}
+        :class:`scglue.models.scglue.PairedSCGLUEModel`,
+        :class:`scglue.models.scglue.DisentangledSCGLUEModel`}
     skip_balance
         Skip the balancing step and use equal weight for all cells
     init_kws
         Model initialization keyword arguments
         (see the constructor of the ``model`` class,
-        either :class:`scglue.models.scglue.SCGLUEModel`
-        or :class:`scglue.models.scglue.PairedSCGLUEModel`)
+        :class:`scglue.models.scglue.SCGLUEModel`,
+        :class:`scglue.models.scglue.PairedSCGLUEModel`
+        or :class:`scglue.models.scglue.DisentangledSCGLUEModel`)
     compile_kws
         Model compile keyword arguments
         (see the ``compile`` method of the ``model`` class,
-        either :meth:`scglue.models.scglue.SCGLUEModel.compile`
-        or :meth:`scglue.models.scglue.PairedSCGLUEModel.compile`)
+        :meth:`scglue.models.scglue.SCGLUEModel.compile`,
+        :meth:`scglue.models.scglue.PairedSCGLUEModel.compile`
+        or :meth:`scglue.models.scglue.DisentangledSCGLUEModel.compile`)
     fit_kws
         Model fitting keyword arguments
         (see :meth:`scglue.models.scglue.SCGLUEModel.fit`)
