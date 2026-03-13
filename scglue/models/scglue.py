@@ -1457,3 +1457,730 @@ class PairedSCGLUEModel(SCGLUEModel):
             lr=lr,
             **kwargs,
         )
+
+
+# ---------------------- Disentangled β-VAE GLUE --------------------------------
+
+_DISENTANGLED_ENCODER_MAP: Mapping[str, type] = {
+    "Normal": sc.DisentangledVanillaDataEncoder,
+    "ZIN": sc.DisentangledVanillaDataEncoder,
+    "ZILN": sc.DisentangledVanillaDataEncoder,
+    "NB": sc.DisentangledNBDataEncoder,
+    "NBMixture": sc.DisentangledNBDataEncoder,
+    "ZINB": sc.DisentangledNBDataEncoder,
+    "Beta": sc.DisentangledVanillaDataEncoder,
+    "BetaBinomial": sc.DisentangledVanillaDataEncoder,
+    "Bernoulli": sc.DisentangledVanillaDataEncoder,
+}
+
+_DISENTANGLED_DECODER_MAP: Mapping[str, type] = {
+    "Normal": sc.DisentangledNormalDataDecoder,
+    "ZIN": sc.DisentangledZINDataDecoder,
+    "ZILN": sc.DisentangledZILNDataDecoder,
+    "NB": sc.DisentangledNBDataDecoder,
+    "NBMixture": sc.DisentangledNBMixtureDataDecoder,
+    "ZINB": sc.DisentangledZINBDataDecoder,
+    "Beta": sc.DisentangledBetaDataDecoder,
+    "BetaBinomial": sc.DisentangledBetaBinomialDataDecoder,
+    "Bernoulli": sc.DisentangledBernoulliDataDecoder,
+}
+
+
+class DisentangledSCGLUE(SCGLUE):
+    r"""
+    Disentangled GLUE network with shared and private latent spaces
+
+    Parameters
+    ----------
+    g2v
+        Graph encoder
+    v2g
+        Graph decoder
+    x2u
+        Data encoders (indexed by modality name)
+    u2x
+        Data decoders (indexed by modality name)
+    idx
+        Feature indices among graph vertices (indexed by modality name)
+    du
+        Modality discriminator
+    prior
+        Latent prior
+    u2c
+        Data classifier
+    shared_dim
+        Dimensionality of shared latent space
+    private_dim
+        Dimensionality of private latent space
+    """
+
+    def __init__(
+        self,
+        g2v: sc.GraphEncoder,
+        v2g: sc.GraphDecoder,
+        x2u: Mapping[str, sc.DataEncoder],
+        u2x: Mapping[str, sc.DataDecoder],
+        idx: Mapping[str, torch.Tensor],
+        du: sc.Discriminator,
+        prior: sc.Prior,
+        u2c: Optional[sc.Classifier] = None,
+        shared_dim: int = 30,
+        private_dim: int = 20,
+    ) -> None:
+        super().__init__(g2v, v2g, x2u, u2x, idx, du, prior, u2c)
+        self.shared_dim = shared_dim
+        self.private_dim = private_dim
+
+
+@logged
+class DisentangledSCGLUETrainer(SCGLUETrainer):
+    r"""
+    Trainer for disentangled β-VAE GLUE
+
+    Parameters
+    ----------
+    net
+        :class:`DisentangledSCGLUE` network to be trained
+    lam_data
+        Data weight
+    beta_shared
+        β weight for shared latent KL divergence
+    beta_private
+        β weight for private latent KL divergence
+    lam_graph
+        Graph weight
+    lam_align
+        Adversarial alignment weight
+    lam_sup
+        Cell type supervision weight
+    dsc_steps
+        Number of discriminator steps per encoder-decoder step
+    normalize_u
+        Whether to L2 normalize shared cell embeddings before decoder
+    modality_weight
+        Relative modality weight (indexed by modality name)
+    optim
+        Optimizer
+    lr
+        Learning rate
+    **kwargs
+        Additional keyword arguments are passed to the optimizer constructor
+    """
+
+    def __init__(
+        self,
+        net: DisentangledSCGLUE,
+        lam_data: float = None,
+        beta_shared: float = None,
+        beta_private: float = None,
+        lam_graph: float = None,
+        lam_align: float = None,
+        lam_sup: float = None,
+        dsc_steps: int = None,
+        normalize_u: bool = None,
+        modality_weight: Mapping[str, float] = None,
+        optim: str = None,
+        lr: float = None,
+        **kwargs,
+    ) -> None:
+        required_kwargs = ("beta_shared", "beta_private")
+        for required_kwarg in required_kwargs:
+            if locals()[required_kwarg] is None:
+                raise ValueError(f"`{required_kwarg}` must be specified!")
+        # Pass beta_shared as lam_kl to parent (used for graph KL)
+        super().__init__(
+            net,
+            lam_data=lam_data,
+            lam_kl=beta_shared,
+            lam_graph=lam_graph,
+            lam_align=lam_align,
+            lam_sup=lam_sup,
+            dsc_steps=dsc_steps,
+            normalize_u=normalize_u,
+            modality_weight=modality_weight,
+            optim=optim,
+            lr=lr,
+            **kwargs,
+        )
+        self.beta_shared = beta_shared
+        self.beta_private = beta_private
+        # Replace x_{k}_kl with x_{k}_kl_shared and x_{k}_kl_private
+        for k in net.keys:
+            self.required_losses.remove(f"x_{k}_kl")
+            self.required_losses.extend([f"x_{k}_kl_shared", f"x_{k}_kl_private"])
+
+    def compute_losses(
+        self, data: DataTensors, epoch: int, dsc_only: bool = False
+    ) -> Mapping[str, torch.Tensor]:
+        net = self.net
+        x, xrep, xbch, xlbl, xdwt, xflag, eidx, ewt, esgn = data
+
+        # 1. Encode: returns 3-tuple (z_shared, z_private, l)
+        z_shared, z_private, l = {}, {}, {}
+        for k in net.keys:
+            z_shared[k], z_private[k], l[k] = net.x2u[k](
+                x[k], xrep[k], lazy_normalizer=dsc_only
+            )
+        z_shared_samp = {k: z_shared[k].rsample() for k in net.keys}
+        z_private_samp = {k: z_private[k].rsample() for k in net.keys}
+        if self.normalize_u:
+            z_shared_samp = {
+                k: F.normalize(z_shared_samp[k], dim=1) for k in net.keys
+            }
+        prior = net.prior()
+
+        # 2. GAN: use z_shared.mean only
+        u_cat = torch.cat([z_shared[k].mean for k in net.keys])
+        xbch_cat = torch.cat([xbch[k] for k in net.keys])
+        xdwt_cat = torch.cat([xdwt[k] for k in net.keys])
+        xflag_cat = torch.cat([xflag[k] for k in net.keys])
+        anneal = (
+            max(1 - (epoch - 1) / self.align_burnin, 0)
+            if self.align_burnin
+            else 0
+        )
+        if anneal:
+            noise = D.Normal(0, u_cat.std(axis=0)).sample((u_cat.shape[0],))
+            u_cat = u_cat + (anneal * self.BURNIN_NOISE_EXAG) * noise
+        dsc_loss = F.cross_entropy(
+            net.du(u_cat, xbch_cat), xflag_cat, reduction="none"
+        )
+        dsc_loss = (dsc_loss * xdwt_cat).sum() / xdwt_cat.numel()
+        if dsc_only:
+            return {"dsc_loss": self.lam_align * dsc_loss}
+
+        # 3. Classifier: use z_shared only
+        if net.u2c:
+            xlbl_cat = torch.cat([xlbl[k] for k in net.keys])
+            lmsk = xlbl_cat >= 0
+            sup_loss = F.cross_entropy(
+                net.u2c(u_cat[lmsk]), xlbl_cat[lmsk], reduction="none"
+            ).sum() / max(lmsk.sum(), 1)
+        else:
+            sup_loss = torch.tensor(0.0, device=net.device)
+
+        # 4. Graph ELBO (v dimension = shared_dim)
+        v = net.g2v(self.eidx, self.enorm, self.esgn)
+        vsamp = v.rsample()
+
+        g_nll = -net.v2g(vsamp, eidx, esgn).log_prob(ewt)
+        pos_mask = (ewt != 0).to(torch.int64)
+        n_pos = pos_mask.sum().item()
+        n_neg = pos_mask.numel() - n_pos
+        g_nll_pn = torch.zeros(2, dtype=g_nll.dtype, device=g_nll.device)
+        g_nll_pn.scatter_add_(0, pos_mask, g_nll)
+        avgc = (n_pos > 0) + (n_neg > 0)
+        g_nll = (
+            g_nll_pn[0] / max(n_neg, 1) + g_nll_pn[1] / max(n_pos, 1)
+        ) / avgc
+        g_kl = D.kl_divergence(v, prior).sum(dim=1).mean() / vsamp.shape[0]
+        g_elbo = g_nll + self.beta_shared * g_kl
+
+        # 5. Data reconstruction with disentangled decoder
+        x_nll = {
+            k: -net.u2x[k](
+                z_shared_samp[k],
+                z_private_samp[k],
+                vsamp[getattr(net, f"{k}_idx")],
+                xbch[k],
+                l[k],
+            )
+            .log_prob(x[k])
+            .nanmean()
+            for k in net.keys
+        }
+
+        # 6. Separated KL losses + β weighting
+        x_kl_shared = {
+            k: D.kl_divergence(z_shared[k], prior).sum(dim=1).mean()
+            / x[k].shape[1]
+            for k in net.keys
+        }
+        x_kl_private = {
+            k: D.kl_divergence(z_private[k], prior).sum(dim=1).mean()
+            / x[k].shape[1]
+            for k in net.keys
+        }
+        x_elbo = {
+            k: x_nll[k]
+            + self.beta_shared * x_kl_shared[k]
+            + self.beta_private * x_kl_private[k]
+            for k in net.keys
+        }
+        x_elbo_sum = sum(
+            self.modality_weight[k] * x_elbo[k] for k in net.keys
+        )
+
+        vae_loss = (
+            self.lam_data * x_elbo_sum
+            + self.lam_graph * len(net.keys) * g_elbo
+            + self.lam_sup * sup_loss
+        )
+        gen_loss = vae_loss - self.lam_align * dsc_loss
+
+        losses = {
+            "dsc_loss": dsc_loss,
+            "vae_loss": vae_loss,
+            "gen_loss": gen_loss,
+            "g_nll": g_nll,
+            "g_kl": g_kl,
+            "g_elbo": g_elbo,
+        }
+        for k in net.keys:
+            losses.update(
+                {
+                    f"x_{k}_nll": x_nll[k],
+                    f"x_{k}_kl_shared": x_kl_shared[k],
+                    f"x_{k}_kl_private": x_kl_private[k],
+                    f"x_{k}_elbo": x_elbo[k],
+                }
+            )
+        if net.u2c:
+            losses["sup_loss"] = sup_loss
+        return losses
+
+
+@logged
+class DisentangledSCGLUEModel(SCGLUEModel):
+    r"""
+    Disentangled β-VAE GLUE model for single-cell multi-omics data integration
+
+    The latent space is disentangled into a shared subspace for cross-modal
+    alignment and a private subspace for modality-specific information.
+    RNA modalities configured as NB are automatically upgraded to ZINB.
+
+    Parameters
+    ----------
+    adatas
+        Datasets (indexed by modality name)
+    vertices
+        Guidance graph vertices (must cover feature names in all modalities)
+    latent_dim
+        Total latent dimensionality (shared_dim + private_dim)
+    shared_dim
+        Dimensionality of shared latent space (used for cross-modal alignment)
+    h_depth
+        Hidden layer depth for encoder and discriminator
+    h_dim
+        Hidden layer dimensionality for encoder and discriminator
+    dropout
+        Dropout rate
+    disc_norm
+        Whether to perform normalization at discriminator input
+    shared_batches
+        Whether the same batches are shared across modalities
+    random_seed
+        Random seed
+    """
+
+    NET_TYPE = DisentangledSCGLUE
+    TRAINER_TYPE = DisentangledSCGLUETrainer
+
+    def __init__(
+        self,
+        adatas: Mapping[str, AnnData],
+        vertices: List[str],
+        latent_dim: int = 50,
+        shared_dim: int = 30,
+        h_depth: int = 2,
+        h_dim: int = 256,
+        dropout: float = 0.2,
+        disc_norm: bool = False,
+        shared_batches: bool = False,
+        random_seed: int = 0,
+    ) -> None:
+        self.vertices = pd.Index(vertices)
+        self.random_seed = random_seed
+        torch.manual_seed(self.random_seed)
+
+        if not 0 < shared_dim < latent_dim:
+            raise ValueError("`shared_dim` must be greater than 0 and smaller than `latent_dim`!")
+        private_dim = latent_dim - shared_dim
+
+        g2v = sc.GraphEncoder(self.vertices.size, shared_dim)
+        v2g = sc.GraphDecoder()
+        self.modalities, idx, x2u, u2x, all_ct = {}, {}, {}, {}, set()
+        for k, adata in adatas.items():
+            if config.ANNDATA_KEY not in adata.uns:
+                raise ValueError(
+                    f"The '{k}' dataset has not been configured. "
+                    f"Please call `configure_dataset` first!"
+                )
+            data_config = copy.deepcopy(adata.uns[config.ANNDATA_KEY])
+            if data_config["rep_dim"] and data_config["rep_dim"] < latent_dim:
+                self.logger.warning(
+                    "It is recommended that `use_rep` dimensionality "
+                    "be equal or larger than `latent_dim`."
+                )
+            idx[k] = self.vertices.get_indexer(
+                data_config["features"]
+            ).astype(np.int64)
+            if idx[k].min() < 0:
+                raise ValueError(
+                    "Not all modality features exist in the graph!"
+                )
+            idx[k] = torch.as_tensor(idx[k])
+
+            # Auto-upgrade NB to ZINB for disentangled model
+            prob_model = data_config["prob_model"]
+            if prob_model == "NB":
+                prob_model = "ZINB"
+
+            x2u[k] = _DISENTANGLED_ENCODER_MAP[prob_model](
+                data_config["rep_dim"] or len(data_config["features"]),
+                latent_dim,
+                shared_dim=shared_dim,
+                h_depth=h_depth,
+                h_dim=h_dim,
+                dropout=dropout,
+            )
+            data_config["batches"] = (
+                pd.Index([])
+                if data_config["batches"] is None
+                else pd.Index(data_config["batches"])
+            )
+            u2x[k] = _DISENTANGLED_DECODER_MAP[prob_model](
+                len(data_config["features"]),
+                private_dim=private_dim,
+                n_batches=max(data_config["batches"].size, 1),
+            )
+            all_ct = all_ct.union(
+                set()
+                if data_config["cell_types"] is None
+                else data_config["cell_types"]
+            )
+            self.modalities[k] = data_config
+        all_ct = pd.Index(all_ct).sort_values()
+        for modality in self.modalities.values():
+            modality["cell_types"] = all_ct
+        if shared_batches:
+            all_batches = [
+                modality["batches"] for modality in self.modalities.values()
+            ]
+            ref_batch = all_batches[0]
+            for batches in all_batches:
+                if not np.array_equal(batches, ref_batch):
+                    raise RuntimeError(
+                        "Batches must match when using `shared_batches`!"
+                    )
+            du_n_batches = ref_batch.size
+        else:
+            du_n_batches = 0
+        du = sc.Discriminator(
+            shared_dim,
+            len(self.modalities),
+            n_batches=du_n_batches,
+            h_depth=h_depth,
+            h_dim=h_dim,
+            dropout=dropout,
+            norm=disc_norm,
+        )
+        prior = sc.Prior()
+        # Call Model.__init__ directly (bypass SCGLUEModel.__init__)
+        Model.__init__(
+            self,
+            g2v,
+            v2g,
+            x2u,
+            u2x,
+            idx,
+            du,
+            prior,
+            u2c=None if all_ct.empty else sc.Classifier(shared_dim, all_ct.size),
+            shared_dim=shared_dim,
+            private_dim=private_dim,
+        )
+
+    def compile(  # pylint: disable=arguments-differ
+        self,
+        lam_data: float = 1.0,
+        beta_shared: float = 4.0,
+        beta_private: float = 1.0,
+        lam_graph: float = 0.02,
+        lam_align: float = 0.05,
+        lam_sup: float = 0.02,
+        dsc_steps: int = 1,
+        normalize_u: bool = False,
+        modality_weight: Optional[Mapping[str, float]] = None,
+        lr: float = 2e-3,
+        **kwargs,
+    ) -> None:
+        r"""
+        Prepare model for training
+
+        Parameters
+        ----------
+        lam_data
+            Data weight
+        beta_shared
+            β weight for shared latent KL divergence
+        beta_private
+            β weight for private latent KL divergence
+        lam_graph
+            Graph weight
+        lam_align
+            Adversarial alignment weight
+        lam_sup
+            Cell type supervision weight
+        dsc_steps
+            Number of discriminator steps per encoder-decoder step
+        normalize_u
+            Whether to L2 normalize shared cell embeddings before decoder
+        modality_weight
+            Relative modality weight (indexed by modality name)
+        lr
+            Learning rate
+        **kwargs
+            Additional keyword arguments passed to trainer
+        """
+        if modality_weight is None:
+            modality_weight = {k: 1.0 for k in self.net.keys}
+        Model.compile(
+            self,
+            lam_data=lam_data,
+            beta_shared=beta_shared,
+            beta_private=beta_private,
+            lam_graph=lam_graph,
+            lam_align=lam_align,
+            lam_sup=lam_sup,
+            dsc_steps=dsc_steps,
+            normalize_u=normalize_u,
+            modality_weight=modality_weight,
+            optim="RMSprop",
+            lr=lr,
+            **kwargs,
+        )
+
+    @torch.no_grad()
+    def encode_data(
+        self,
+        key: str,
+        adata: AnnData,
+        batch_size: int = 128,
+        n_sample: Optional[int] = None,
+        return_private: bool = False,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        r"""
+        Compute data (cell) embedding
+
+        Parameters
+        ----------
+        key
+            Modality key
+        adata
+            Input dataset
+        batch_size
+            Size of minibatches
+        n_sample
+            Number of samples from the embedding distribution,
+            by default ``None``, returns the mean of the embedding distribution.
+        return_private
+            Whether to also return the private latent embedding.
+            If True, returns a tuple (z_shared, z_private).
+
+        Returns
+        -------
+        data_embedding
+            Shared data (cell) embedding, or tuple of (shared, private)
+            if ``return_private`` is True.
+        """
+        self.net.eval()
+        encoder = self.net.x2u[key]
+        data = AnnDataset(
+            [adata], [self.modalities[key]], mode="eval", getitem_size=batch_size
+        )
+        data_loader = DataLoader(
+            data,
+            batch_size=1,
+            shuffle=False,
+            num_workers=config.DATALOADER_NUM_WORKERS,
+            pin_memory=config.DATALOADER_PIN_MEMORY and not config.CPU_ONLY,
+            drop_last=False,
+            persistent_workers=False,
+        )
+        shared_result = []
+        private_result = []
+        for x, xrep, *_ in data_loader:
+            z_shared, z_private, _ = encoder(
+                x.to(self.net.device, non_blocking=True),
+                xrep.to(self.net.device, non_blocking=True),
+                lazy_normalizer=True,
+            )
+            if n_sample:
+                shared_result.append(
+                    z_shared.sample((n_sample,)).cpu().permute(1, 0, 2)
+                )
+                if return_private:
+                    private_result.append(
+                        z_private.sample((n_sample,)).cpu().permute(1, 0, 2)
+                    )
+            else:
+                shared_result.append(z_shared.mean.detach().cpu())
+                if return_private:
+                    private_result.append(z_private.mean.detach().cpu())
+        shared = torch.cat(shared_result).numpy()
+        if return_private:
+            private = torch.cat(private_result).numpy()
+            return shared, private
+        return shared
+
+    @torch.no_grad()
+    def decode_data(
+        self,
+        source_key: str,
+        target_key: str,
+        adata: AnnData,
+        graph: nx.Graph,
+        target_libsize: Optional[Union[float, np.ndarray]] = None,
+        target_batch: Optional[np.ndarray] = None,
+        batch_size: int = 128,
+    ) -> np.ndarray:
+        r"""
+        Decode data (cross-modal prediction)
+
+        Uses the source modality's shared embedding for cross-modal transfer.
+        Private embedding is set to zero (prior mean) since modality-specific
+        information is not transferable across modalities.
+
+        Parameters
+        ----------
+        source_key
+            Source modality key
+        target_key
+            Target modality key
+        adata
+            Source modality data
+        graph
+            Guidance graph
+        target_libsize
+            Target modality library size, by default 1.0
+        target_batch
+            Target modality batch, by default batch 0
+        batch_size
+            Size of minibatches
+
+        Returns
+        -------
+        decoded
+            Decoded data
+
+        Note
+        ----
+        This is EXPERIMENTAL!
+        """
+        l = target_libsize or 1.0
+        if not isinstance(l, np.ndarray):
+            l = np.asarray(l)
+        l = l.squeeze()
+        if l.ndim == 0:
+            l = l[np.newaxis]
+        elif l.ndim > 1:
+            raise ValueError("`target_libsize` cannot be >1 dimensional")
+        if l.size == 1:
+            l = np.repeat(l, adata.shape[0])
+        if l.size != adata.shape[0]:
+            raise ValueError(
+                "`target_libsize` must have the same size as `adata`!"
+            )
+        l = l.reshape((-1, 1))
+
+        use_batch = self.modalities[target_key]["use_batch"]
+        batches = self.modalities[target_key]["batches"]
+        if use_batch and target_batch is not None:
+            target_batch = np.asarray(target_batch)
+            if target_batch.size != adata.shape[0]:
+                raise ValueError(
+                    "`target_batch` must have the same size as `adata`!"
+                )
+            b = batches.get_indexer(target_batch)
+        else:
+            b = np.zeros(adata.shape[0], dtype=int)
+
+        net = self.net
+        device = net.device
+        net.eval()
+
+        u = self.encode_data(source_key, adata, batch_size=batch_size)
+        v = self.encode_graph(graph)
+        v = torch.as_tensor(v, device=device)
+        v = v[getattr(net, f"{target_key}_idx")]
+
+        # z_private = zero (prior mean, modality-specific info not transferable)
+        z_private = np.zeros(
+            (u.shape[0], net.private_dim), dtype=np.float32
+        )
+
+        data = ArrayDataset(u, z_private, b, l, getitem_size=batch_size)
+        data_loader = DataLoader(
+            data,
+            batch_size=1,
+            shuffle=False,
+            num_workers=config.DATALOADER_NUM_WORKERS,
+            pin_memory=config.DATALOADER_PIN_MEMORY and not config.CPU_ONLY,
+            drop_last=False,
+            persistent_workers=False,
+        )
+        decoder = net.u2x[target_key]
+
+        result = []
+        for u_, zp_, b_, l_ in data_loader:
+            u_ = u_.to(device, non_blocking=True)
+            zp_ = zp_.to(device, non_blocking=True)
+            b_ = b_.to(device, non_blocking=True)
+            l_ = l_.to(device, non_blocking=True)
+            result.append(decoder(u_, zp_, v, b_, l_).mean.detach().cpu())
+        return torch.cat(result).numpy()
+
+    @torch.no_grad()
+    def classify_data(
+        self,
+        key: str,
+        adata: AnnData,
+        batch_size: int = 128,
+    ) -> pd.DataFrame:
+        r"""
+        Obtain cell type classification using shared latent embedding
+
+        Parameters
+        ----------
+        key
+            Modality key
+        adata
+            Input dataset
+        batch_size
+            Size of minibatches
+
+        Returns
+        -------
+        data_class
+            Cell type classification
+        """
+        self.net.eval()
+        encoder = self.net.x2u[key]
+        classifier = self.net.u2c
+        data = AnnDataset(
+            [adata], [self.modalities[key]], mode="eval", getitem_size=batch_size
+        )
+        data_loader = DataLoader(
+            data,
+            batch_size=1,
+            shuffle=False,
+            num_workers=config.DATALOADER_NUM_WORKERS,
+            pin_memory=config.DATALOADER_PIN_MEMORY and not config.CPU_ONLY,
+            drop_last=False,
+            persistent_workers=False,
+        )
+        result = []
+        for x, xrep, *_ in data_loader:
+            z_shared, _, _ = encoder(
+                x.to(self.net.device, non_blocking=True),
+                xrep.to(self.net.device, non_blocking=True),
+                lazy_normalizer=True,
+            )
+            c = classifier(z_shared.mean).softmax(dim=-1)
+            result.append(c.detach().cpu())
+        return pd.DataFrame(
+            torch.cat(result).numpy(),
+            index=adata.obs_names,
+            columns=self.modalities[key]["cell_types"],
+        )
