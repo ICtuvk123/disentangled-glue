@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--paired",
         action="store_true",
-        help="Use PairedSCGLUEModel and obs_names to align matched cells",
+        help="Use obs_names to align matched cells",
     )
     parser.add_argument(
         "--shared-batches",
@@ -84,16 +84,16 @@ def parse_args() -> argparse.Namespace:
         help="Random seed used for model initialization",
     )
     parser.add_argument(
-        "--latent-dim",
-        type=int,
-        default=50,
-        help="Total latent dimensionality",
-    )
-    parser.add_argument(
         "--shared-dim",
         type=int,
-        default=30,
-        help="Shared latent dimensionality for the disentangled model",
+        default=50,
+        help="Shared latent dimensionality (equals standard GLUE latent_dim)",
+    )
+    parser.add_argument(
+        "--private-dim",
+        type=int,
+        default=20,
+        help="Per-modality private latent dimensionality (disentangled model only)",
     )
     parser.add_argument(
         "--beta-shared",
@@ -102,15 +102,51 @@ def parse_args() -> argparse.Namespace:
         help="Shared KL weight for the disentangled model",
     )
     parser.add_argument(
+        "--lam-iso",
+        type=float,
+        default=0.0,
+        help="Isometric loss weight (disentangled model only)",
+    )
+    parser.add_argument(
         "--beta-private",
         type=float,
-        default=1.0,
-        help="Private KL weight for the disentangled model",
+        default=None,
+        help="Private KL weight (broadcast to all modalities). "
+             "Overridden by --beta-private-rna/atac/prot if any of those are set.",
+    )
+    parser.add_argument(
+        "--beta-private-rna",
+        type=float,
+        default=None,
+        help="Private KL weight for the RNA modality (disentangled model only)",
+    )
+    parser.add_argument(
+        "--beta-private-atac",
+        type=float,
+        default=None,
+        help="Private KL weight for the ATAC modality (disentangled model only)",
+    )
+    parser.add_argument(
+        "--beta-private-prot",
+        type=float,
+        default=None,
+        help="Private KL weight for the protein modality (disentangled model only)",
     )
     parser.add_argument(
         "--umap",
         action="store_true",
         help="Compute neighbors and UMAP for the combined embedding",
+    )
+    parser.add_argument(
+        "--preprocess-only",
+        action="store_true",
+        help="Run preprocessing and graph construction only, then exit",
+    )
+    parser.add_argument(
+        "--preprocessed-dir",
+        default=None,
+        help="Load preprocessed h5ad and guidance graph from this directory, "
+             "skipping data preprocessing and graph construction",
     )
     return parser.parse_args()
 
@@ -281,15 +317,26 @@ def train_glue(
     init_kws = {
         "shared_batches": args.shared_batches,
         "random_seed": args.random_seed,
-        "latent_dim": args.latent_dim,
+        "latent_dim": args.shared_dim,  # standard models use shared_dim as latent_dim
     }
     compile_kws = {}
     if args.model == "disentangled":
+        init_kws.pop("latent_dim")  # disentangled model derives total from shared+private
         init_kws["shared_dim"] = args.shared_dim
+        init_kws["private_dim"] = args.private_dim
+        # Build per-modality beta_private dict.
+        # Per-modality flags take priority; --beta-private is the fallback default.
+        fallback = args.beta_private if args.beta_private is not None else 1.0
+        beta_private = {
+            "rna":  args.beta_private_rna  if args.beta_private_rna  is not None else fallback,
+            "atac": args.beta_private_atac if args.beta_private_atac is not None else fallback,
+            "prot": args.beta_private_prot if args.beta_private_prot is not None else fallback,
+        }
         compile_kws.update(
             {
-                "beta_shared": args.beta_shared,
-                "beta_private": args.beta_private,
+                "beta_shared":  args.beta_shared,
+                "beta_private": beta_private,
+                "lam_iso":      args.lam_iso,
             }
         )
     return scglue.models.fit_SCGLUE(
@@ -334,7 +381,8 @@ def save_embeddings(
         },
     )
     if run_umap:
-        sc.pp.neighbors(combined, n_pcs=50, use_rep="X_glue", metric="cosine")
+        n_pcs = min(50, combined.obsm["X_glue"].shape[1])
+        sc.pp.neighbors(combined, n_pcs=n_pcs, use_rep="X_glue", metric="cosine")
         sc.tl.umap(combined)
 
     np.save(output_dir / "combined_glue.npy", combined.obsm["X_glue"])
@@ -352,25 +400,35 @@ def main() -> None:
     if args.bedtools:
         scglue.config.BEDTOOLS_PATH = args.bedtools
 
-    rna = deduplicate_vars(read_adata(args.rna))
-    atac = deduplicate_vars(read_adata(args.atac))
-    prot = deduplicate_vars(read_adata(args.prot))
+    if args.preprocessed_dir:
+        pp = Path(args.preprocessed_dir)
+        rna = sc.read(pp / "rna_pp.h5ad")
+        atac = sc.read(pp / "atac_pp.h5ad")
+        prot = sc.read(pp / "prot_pp.h5ad")
+        guidance = nx.read_graphml(pp / "guidance.graphml.gz")
+    else:
+        rna = deduplicate_vars(read_adata(args.rna))
+        atac = deduplicate_vars(read_adata(args.atac))
+        prot = deduplicate_vars(read_adata(args.prot))
 
-    ensure_layer(rna, args.rna_layer)
-    ensure_layer(atac, args.atac_layer)
-    ensure_layer(prot, args.prot_layer)
-    auto_mark_rna_hvg(rna)
-    ensure_hvg(rna, "rna")
-    ensure_hvg(atac, "atac")
-    ensure_obs_names_unique({"rna": rna, "atac": atac, "prot": prot})
+        ensure_layer(rna, args.rna_layer)
+        ensure_layer(atac, args.atac_layer)
+        ensure_layer(prot, args.prot_layer)
+        auto_mark_rna_hvg(rna)
+        ensure_hvg(rna, "rna")
+        ensure_hvg(atac, "atac")
+        ensure_obs_names_unique({"rna": rna, "atac": atac, "prot": prot})
 
-    prepare_representations(rna, atac, prot)
-    rna, atac, prot, guidance = build_guidance_graph(rna, atac, prot, args)
+        prepare_representations(rna, atac, prot)
+        rna, atac, prot, guidance = build_guidance_graph(rna, atac, prot, args)
 
-    rna.write(output_dir / "rna_pp.h5ad", compression="gzip")
-    atac.write(output_dir / "atac_pp.h5ad", compression="gzip")
-    prot.write(output_dir / "prot_pp.h5ad", compression="gzip")
-    nx.write_graphml(guidance, output_dir / "guidance.graphml.gz")
+        rna.write(output_dir / "rna_pp.h5ad", compression="gzip")
+        atac.write(output_dir / "atac_pp.h5ad", compression="gzip")
+        prot.write(output_dir / "prot_pp.h5ad", compression="gzip")
+        nx.write_graphml(guidance, output_dir / "guidance.graphml.gz")
+
+    if args.preprocess_only:
+        return
 
     configure_datasets(rna, atac, prot, args)
     glue, guidance_hvf = train_glue(rna, atac, prot, guidance, args)

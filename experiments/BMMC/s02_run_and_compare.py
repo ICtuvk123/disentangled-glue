@@ -68,6 +68,15 @@ def parse_args():
                    help="obs column marking modality origin")
     p.add_argument("--skip-training", action="store_true",
                    help="Skip training, only run evaluation on existing outputs")
+    # Disentangled-model hyperparameters forwarded to s02_glue.py
+    p.add_argument("--latent-dim", type=int, default=50)
+    p.add_argument("--shared-dim", type=int, default=30)
+    p.add_argument("--beta-shared", type=float, default=4.0)
+    p.add_argument("--beta-private", type=float, default=None,
+                   help="Fallback private KL weight for all modalities")
+    p.add_argument("--beta-private-rna", type=float, default=None)
+    p.add_argument("--beta-private-atac", type=float, default=None)
+    p.add_argument("--beta-private-prot", type=float, default=None)
     return p.parse_args()
 
 # ──────────────────────────────────────────────────────────────────────
@@ -95,6 +104,18 @@ def train_model(model_name: str, args, out_dir: Path) -> None:
         cmd += ["--bedtools", args.bedtools]
     if args.batch_key:
         cmd += ["--batch-key", args.batch_key]
+    if model_name == "disentangled":
+        cmd += ["--latent-dim", str(args.latent_dim),
+                "--shared-dim", str(args.shared_dim),
+                "--beta-shared", str(args.beta_shared)]
+        if args.beta_private is not None:
+            cmd += ["--beta-private", str(args.beta_private)]
+        if args.beta_private_rna is not None:
+            cmd += ["--beta-private-rna", str(args.beta_private_rna)]
+        if args.beta_private_atac is not None:
+            cmd += ["--beta-private-atac", str(args.beta_private_atac)]
+        if args.beta_private_prot is not None:
+            cmd += ["--beta-private-prot", str(args.beta_private_prot)]
 
     print(f"\n{'='*60}")
     print(f"  Training: {model_name}")
