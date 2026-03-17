@@ -1572,10 +1572,11 @@ class DisentangledSCGLUETrainer(SCGLUETrainer):
         net: DisentangledSCGLUE,
         lam_data: float = None,
         beta_shared: float = None,
-        beta_private: float = None,
+        beta_private: Union[float, Mapping[str, float]] = None,
         lam_graph: float = None,
         lam_align: float = None,
         lam_sup: float = None,
+        lam_iso: float = None,
         dsc_steps: int = None,
         normalize_u: bool = None,
         modality_weight: Mapping[str, float] = None,
@@ -1583,10 +1584,10 @@ class DisentangledSCGLUETrainer(SCGLUETrainer):
         lr: float = None,
         **kwargs,
     ) -> None:
-        required_kwargs = ("beta_shared", "beta_private")
-        for required_kwarg in required_kwargs:
-            if locals()[required_kwarg] is None:
-                raise ValueError(f"`{required_kwarg}` must be specified!")
+        if beta_shared is None:
+            raise ValueError("`beta_shared` must be specified!")
+        if beta_private is None:
+            raise ValueError("`beta_private` must be specified!")
         # Pass beta_shared as lam_kl to parent (used for graph KL)
         super().__init__(
             net,
@@ -1603,7 +1604,12 @@ class DisentangledSCGLUETrainer(SCGLUETrainer):
             **kwargs,
         )
         self.beta_shared = beta_shared
-        self.beta_private = beta_private
+        self.lam_iso = lam_iso if lam_iso is not None else 0.0
+        # Normalise beta_private to a per-modality dict
+        if isinstance(beta_private, Mapping):
+            self.beta_private: Mapping[str, float] = dict(beta_private)
+        else:
+            self.beta_private: Mapping[str, float] = {k: float(beta_private) for k in net.keys}
         # Replace x_{k}_kl with x_{k}_kl_shared and x_{k}_kl_private
         for k in net.keys:
             self.required_losses.remove(f"x_{k}_kl")
@@ -1704,17 +1710,39 @@ class DisentangledSCGLUETrainer(SCGLUETrainer):
         x_elbo = {
             k: x_nll[k]
             + self.beta_shared * x_kl_shared[k]
-            + self.beta_private * x_kl_private[k]
+            + self.beta_private[k] * x_kl_private[k]
             for k in net.keys
         }
         x_elbo_sum = sum(
             self.modality_weight[k] * x_elbo[k] for k in net.keys
         )
 
+        # 7. Isometric loss: pairwise distances in z_shared should match
+        # pairwise distances in z_full = cat(z_shared, z_private).
+        # Uses posterior means (μ) as in the formula.
+        # L_iso = Σ_m mean( (d_shared/d_full_mean - d_full/d_full_mean)² )
+        # Normalised by d_full_mean so the loss is scale-free and lam_iso
+        # stays in a comparable range to other losses (~0.01–1.0).
+        # Note: d_full = d_shared + d_private, so the raw difference would
+        # reduce to d_private and drive it to zero.  The normalised version
+        # penalises the *relative* mismatch, not the absolute magnitude.
+        if self.lam_iso > 0:
+            iso_loss = torch.tensor(0.0, device=net.device)
+            for k in net.keys:
+                zs = z_shared[k].mean                           # (n, shared_dim)
+                zf = torch.cat([zs, z_private[k].mean], dim=1) # (n, latent_dim)
+                d_shared = torch.cdist(zs, zs).pow(2)
+                d_full   = torch.cdist(zf, zf).pow(2)
+                scale    = d_full.mean().clamp(min=1e-8)
+                iso_loss = iso_loss + ((d_shared - d_full) / scale).pow(2).mean()
+        else:
+            iso_loss = torch.tensor(0.0, device=net.device)
+
         vae_loss = (
             self.lam_data * x_elbo_sum
             + self.lam_graph * len(net.keys) * g_elbo
             + self.lam_sup * sup_loss
+            + self.lam_iso * iso_loss
         )
         gen_loss = vae_loss - self.lam_align * dsc_loss
 
@@ -1725,6 +1753,7 @@ class DisentangledSCGLUETrainer(SCGLUETrainer):
             "g_nll": g_nll,
             "g_kl": g_kl,
             "g_elbo": g_elbo,
+            "iso_loss": iso_loss,
         }
         for k in net.keys:
             losses.update(
@@ -1780,8 +1809,8 @@ class DisentangledSCGLUEModel(SCGLUEModel):
         self,
         adatas: Mapping[str, AnnData],
         vertices: List[str],
-        latent_dim: int = 50,
-        shared_dim: int = 30,
+        shared_dim: int = 50,
+        private_dim: int = 20,
         h_depth: int = 2,
         h_dim: int = 256,
         dropout: float = 0.2,
@@ -1793,9 +1822,9 @@ class DisentangledSCGLUEModel(SCGLUEModel):
         self.random_seed = random_seed
         torch.manual_seed(self.random_seed)
 
-        if not 0 < shared_dim < latent_dim:
-            raise ValueError("`shared_dim` must be greater than 0 and smaller than `latent_dim`!")
-        private_dim = latent_dim - shared_dim
+        if shared_dim <= 0 or private_dim <= 0:
+            raise ValueError("`shared_dim` and `private_dim` must both be greater than 0!")
+        latent_dim = shared_dim + private_dim  # total encoder output
 
         g2v = sc.GraphEncoder(self.vertices.size, shared_dim)
         v2g = sc.GraphDecoder()
@@ -1807,10 +1836,10 @@ class DisentangledSCGLUEModel(SCGLUEModel):
                     f"Please call `configure_dataset` first!"
                 )
             data_config = copy.deepcopy(adata.uns[config.ANNDATA_KEY])
-            if data_config["rep_dim"] and data_config["rep_dim"] < latent_dim:
+            if data_config["rep_dim"] and data_config["rep_dim"] < shared_dim:
                 self.logger.warning(
                     "It is recommended that `use_rep` dimensionality "
-                    "be equal or larger than `latent_dim`."
+                    "be equal or larger than `shared_dim`."
                 )
             idx[k] = self.vertices.get_indexer(
                 data_config["features"]
@@ -1895,10 +1924,11 @@ class DisentangledSCGLUEModel(SCGLUEModel):
         self,
         lam_data: float = 1.0,
         beta_shared: float = 4.0,
-        beta_private: float = 1.0,
+        beta_private: Union[float, Mapping[str, float]] = 1.0,
         lam_graph: float = 0.02,
         lam_align: float = 0.05,
         lam_sup: float = 0.02,
+        lam_iso: float = 0.0,
         dsc_steps: int = 1,
         normalize_u: bool = False,
         modality_weight: Optional[Mapping[str, float]] = None,
@@ -1915,13 +1945,20 @@ class DisentangledSCGLUEModel(SCGLUEModel):
         beta_shared
             β weight for shared latent KL divergence
         beta_private
-            β weight for private latent KL divergence
+            β weight for private latent KL divergence.  Can be a single float
+            (broadcast to all modalities) or a dict mapping modality name to
+            its own β value, e.g. ``{"rna": 1.0, "atac": 0.5, "prot": 2.0}``.
         lam_graph
             Graph weight
         lam_align
             Adversarial alignment weight
         lam_sup
             Cell type supervision weight
+        lam_iso
+            Isometric loss weight. Penalises the squared difference between
+            pairwise distances in z_shared and pairwise distances in z_full,
+            preventing the shared space from collapsing while private dims
+            carry all the structural information.
         dsc_steps
             Number of discriminator steps per encoder-decoder step
         normalize_u
@@ -1935,6 +1972,10 @@ class DisentangledSCGLUEModel(SCGLUEModel):
         """
         if modality_weight is None:
             modality_weight = {k: 1.0 for k in self.net.keys}
+        # Normalise beta_private to a per-modality dict so the trainer always
+        # receives a dict regardless of how the caller specified it.
+        if not isinstance(beta_private, Mapping):
+            beta_private = {k: float(beta_private) for k in self.net.keys}
         Model.compile(
             self,
             lam_data=lam_data,
@@ -1943,6 +1984,7 @@ class DisentangledSCGLUEModel(SCGLUEModel):
             lam_graph=lam_graph,
             lam_align=lam_align,
             lam_sup=lam_sup,
+            lam_iso=lam_iso,
             dsc_steps=dsc_steps,
             normalize_u=normalize_u,
             modality_weight=modality_weight,
