@@ -1537,7 +1537,7 @@ class DisentangledSCGLUE(SCGLUE):
         super().__init__(g2v, v2g, x2u, u2x, idx, du, prior, u2c)
         self.shared_dim = shared_dim
         self.private_dim = private_dim
-        self.db = db
+        self.db = db.to(self.device) if db is not None else None
 
 
 @logged
@@ -1668,7 +1668,7 @@ class DisentangledSCGLUETrainer(SCGLUETrainer):
         modality_dsc_loss = (modality_dsc_loss * xdwt_cat).sum() / xdwt_cat.numel()
         if getattr(net, "db", None) is not None and self.lam_batch > 0:
             batch_dsc_loss = F.cross_entropy(
-                net.db(u_cat, torch.zeros_like(xbch_cat)), xbch_cat, reduction="none"
+                net.db(u_cat, torch.zeros(xbch_cat.shape, dtype=xbch_cat.dtype, device=u_cat.device)), xbch_cat, reduction="none"
             )
             batch_dsc_loss = (batch_dsc_loss * xdwt_cat).sum() / xdwt_cat.numel()
         else:
