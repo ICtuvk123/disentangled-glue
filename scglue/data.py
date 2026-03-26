@@ -841,6 +841,263 @@ def estimate_balancing_weight(
 
 
 @logged
+def estimate_alignment_support(
+    *adatas: AnnData,
+    use_rep: str = None,
+    use_batch: Optional[str] = None,
+    n_neighbors: int = 15,
+    leiden_resolution: float = 1.0,
+    cosine_cutoff: float = 0.0,
+    similarity_power: float = 2.0,
+    weight_power: float = 2.0,
+    knn_weight: float = 0.6,
+    cluster_weight: float = 0.25,
+    density_weight: float = 0.15,
+    min_weight: float = 0.05,
+    strategy: str = "soft",
+    hard_threshold: float = 0.1,
+    score_key: str = "unsupported_score",
+    weight_key: str = "unsupported_align_weight",
+    mask_key: str = "unsupported_hard_mask",
+) -> None:
+    r"""
+    Estimate per-cell support for adversarial alignment
+
+    Parameters
+    ----------
+    *adatas
+        Datasets to be compared
+    use_rep
+        Data representation based on which to evaluate support
+    use_batch
+        Estimate support per batch
+        (batch keys and categories must match across all datasets)
+    n_neighbors
+        Number of cross-modal nearest neighbors used in support estimation
+    leiden_resolution
+        Leiden clustering resolution for cluster-level support
+    cosine_cutoff
+        Cosine similarity cutoff below which support is ignored
+    similarity_power
+        Power applied to positive cosine similarities
+    weight_power
+        Power applied when converting support scores to soft alignment weights
+    knn_weight
+        Relative weight of the cross-modal nearest-neighbor score
+    cluster_weight
+        Relative weight of the cluster-matching score
+    density_weight
+        Relative weight of the cross-/within-modality density ratio
+    min_weight
+        Minimum soft alignment weight
+    strategy
+        One of ``{"soft", "hard"}``
+    hard_threshold
+        Support threshold used by the hard strategy
+    score_key
+        New ``obs`` key added for the combined support score
+    weight_key
+        New ``obs`` key added for the alignment weight
+    mask_key
+        New ``obs`` key added for the hard mask
+
+    Note
+    ----
+    Support is estimated in the shared latent space using three terms:
+    cross-modal nearest-neighbor similarity, cluster-level prototype matching,
+    and the ratio between cross-modal and within-modality neighborhood density.
+    The resulting support score lies in :math:`[0, 1]`.
+    """
+    if use_batch:  # Recurse per batch
+        estimate_alignment_support.logger.info("Splitting batches...")
+        adatas_per_batch = defaultdict(list)
+        for adata in adatas:
+            groupby = adata.obs.groupby(use_batch, dropna=False)
+            for b, idx in groupby.indices.items():
+                adata_sub = adata[idx]
+                adatas_per_batch[b].append(
+                    AnnData(
+                        obs=adata_sub.obs.copy(deep=False),
+                        obsm={use_rep: np.asarray(adata_sub.obsm[use_rep])},
+                    )
+                )
+        if len(set(len(items) for items in adatas_per_batch.values())) != 1:
+            raise ValueError("Batches must match across datasets!")
+        for b, items in adatas_per_batch.items():
+            estimate_alignment_support.logger.info("Processing batch %s...", b)
+            estimate_alignment_support(
+                *items,
+                use_rep=use_rep,
+                use_batch=None,
+                n_neighbors=n_neighbors,
+                leiden_resolution=leiden_resolution,
+                cosine_cutoff=cosine_cutoff,
+                similarity_power=similarity_power,
+                weight_power=weight_power,
+                knn_weight=knn_weight,
+                cluster_weight=cluster_weight,
+                density_weight=density_weight,
+                min_weight=min_weight,
+                strategy=strategy,
+                hard_threshold=hard_threshold,
+                score_key=score_key,
+                weight_key=weight_key,
+                mask_key=mask_key,
+            )
+        estimate_alignment_support.logger.info("Collating batches...")
+        collates = [
+            pd.concat([item.obs[[score_key, weight_key, mask_key]] for item in items])
+            for items in zip(*adatas_per_batch.values())
+        ]
+        for adata, collate in zip(adatas, collates):
+            adata.obs[[score_key, weight_key, mask_key]] = collate.loc[adata.obs_names]
+        return
+
+    if use_rep is None:
+        raise ValueError("Missing required argument `use_rep`!")
+    if len(adatas) < 2:
+        raise ValueError("At least two datasets are required!")
+    if n_neighbors <= 0:
+        raise ValueError("`n_neighbors` must be positive!")
+    if strategy not in {"soft", "hard"}:
+        raise ValueError("`strategy` must be one of {'soft', 'hard'}!")
+
+    comp_weights = np.asarray([knn_weight, cluster_weight, density_weight], dtype=float)
+    if np.any(comp_weights < 0) or not np.isfinite(comp_weights).all():
+        raise ValueError("Component weights must be finite and non-negative!")
+    comp_weight_sum = comp_weights.sum()
+    if comp_weight_sum <= 0:
+        raise ValueError("At least one component weight must be positive!")
+    comp_weights /= comp_weight_sum
+
+    adatas_ = [
+        AnnData(
+            obs=adata.obs.copy(deep=False),
+            obsm={use_rep: np.asarray(adata.obsm[use_rep])},
+        )
+        for adata in adatas
+    ]  # Avoid unwanted updates to the input objects
+
+    estimate_alignment_support.logger.info("Normalizing representations...")
+    reps = []
+    intra_support = []
+    for adata_ in adatas_:
+        rep = np.asarray(adata_.obsm[use_rep])
+        if rep.ndim != 2:
+            raise ValueError("Input representation must be two-dimensional!")
+        rep = normalize(rep, norm="l2")
+        reps.append(rep)
+
+        if rep.shape[0] <= 1:
+            intra_support.append(np.ones(rep.shape[0], dtype=rep.dtype))
+            continue
+        k_same = min(n_neighbors + 1, rep.shape[0])
+        nn = sklearn.neighbors.NearestNeighbors(
+            n_neighbors=k_same, metric="cosine"
+        ).fit(rep)
+        distances = nn.kneighbors(rep, return_distance=True)[0][:, 1:]
+        similarities = np.clip(1 - distances, a_min=0.0, a_max=1.0)
+        intra = similarities.mean(axis=1) if similarities.size else np.ones(rep.shape[0])
+        intra_support.append(np.clip(intra, a_min=1e-8, a_max=1.0))
+
+    estimate_alignment_support.logger.info("Computing cell-level support...")
+    knn_scores = [np.zeros(rep.shape[0], dtype=rep.dtype) for rep in reps]
+    density_scores = [np.zeros(rep.shape[0], dtype=rep.dtype) for rep in reps]
+    pair_counts = np.zeros(len(reps), dtype=int)
+    for i, rep_i in enumerate(reps):
+        for j, rep_j in enumerate(reps):
+            if i == j:
+                continue
+            k_cross = min(n_neighbors, rep_j.shape[0])
+            if k_cross <= 0:
+                raise ValueError("Datasets must contain at least one cell!")
+            nn = sklearn.neighbors.NearestNeighbors(
+                n_neighbors=k_cross, metric="cosine"
+            ).fit(rep_j)
+            distances = nn.kneighbors(rep_i, return_distance=True)[0]
+            similarities = np.clip(1 - distances, a_min=0.0, a_max=1.0)
+            similarities[similarities < cosine_cutoff] = 0.0
+            similarities = np.power(similarities, similarity_power)
+            cross_support = similarities.mean(axis=1)
+            knn_scores[i] += cross_support
+            density_scores[i] += np.clip(
+                cross_support / intra_support[i], a_min=0.0, a_max=1.0
+            )
+            pair_counts[i] += 1
+    knn_scores = [score / max(pair_counts[i], 1) for i, score in enumerate(knn_scores)]
+    density_scores = [
+        score / max(pair_counts[i], 1) for i, score in enumerate(density_scores)
+    ]
+
+    estimate_alignment_support.logger.info("Computing cluster-level support...")
+    cluster_scores = [np.zeros(rep.shape[0], dtype=rep.dtype) for rep in reps]
+    cluster_pair_counts = np.zeros(len(reps), dtype=int)
+    leidens = []
+    centroids = []
+    centroid_names = []
+    for adata_ in adatas_:
+        if adata_.shape[0] <= 1:
+            adata_.obs["leiden"] = pd.Categorical(np.repeat("0", adata_.shape[0]))
+        else:
+            sc.pp.neighbors(
+                adata_,
+                n_neighbors=min(max(n_neighbors, 2), max(adata_.shape[0] - 1, 1)),
+                n_pcs=adata_.obsm[use_rep].shape[1],
+                use_rep=use_rep,
+                metric="cosine",
+            )
+            sc.tl.leiden(adata_, resolution=leiden_resolution)
+        leiden = aggregate_obs(
+            adata_,
+            by="leiden",
+            X_agg=None,
+            obs_agg={"leiden": "majority"},
+            obsm_agg={use_rep: "mean"},
+        )
+        leidens.append(adata_.obs["leiden"])
+        centroids.append(normalize(leiden.obsm[use_rep], norm="l2"))
+        centroid_names.append(leiden.obs_names.astype(str))
+
+    for i, centroid_i in enumerate(centroids):
+        for j, centroid_j in enumerate(centroids):
+            if i == j:
+                continue
+            cosine = centroid_i @ centroid_j.T
+            cosine = np.clip(cosine, a_min=0.0, a_max=1.0)
+            cosine[cosine < cosine_cutoff] = 0.0
+            cosine = np.power(cosine, similarity_power)
+            best = cosine.max(axis=1) if cosine.size else np.zeros(centroid_i.shape[0])
+            best = pd.Series(best, index=centroid_names[i])
+            cluster_scores[i] += best.loc[leidens[i].astype(str)].to_numpy()
+            cluster_pair_counts[i] += 1
+    cluster_scores = [
+        score / max(cluster_pair_counts[i], 1)
+        for i, score in enumerate(cluster_scores)
+    ]
+
+    estimate_alignment_support.logger.info("Combining support scores...")
+    for adata, knn_score, cluster_score, density_score in zip(
+        adatas, knn_scores, cluster_scores, density_scores
+    ):
+        support = (
+            comp_weights[0] * knn_score
+            + comp_weights[1] * cluster_score
+            + comp_weights[2] * density_score
+        )
+        support = np.clip(support, a_min=0.0, a_max=1.0)
+        support = np.where(np.isfinite(support), support, 0.0)
+        hard_mask = support >= hard_threshold
+        if strategy == "hard":
+            weights = hard_mask.astype(np.float32)
+        else:
+            weights = min_weight + (1 - min_weight) * np.power(support, weight_power)
+        weights = np.where(np.isfinite(weights), weights, min_weight)
+        adata.obs[score_key] = support
+        adata.obs[weight_key] = weights
+        adata.obs[mask_key] = hard_mask
+
+
+@logged
 def get_metacells(
     *adatas: AnnData,
     use_rep: str = None,

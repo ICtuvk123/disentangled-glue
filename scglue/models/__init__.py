@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from anndata import AnnData
 
-from ..data import estimate_balancing_weight
+from ..data import estimate_alignment_support, estimate_balancing_weight
 from ..typehint import Kws
 from ..utils import config, logged
 from .base import Model
@@ -104,13 +104,12 @@ def configure_dataset(
         if use_batch not in adata.obs:
             raise ValueError("Invalid `use_batch`!")
         data_config["use_batch"] = use_batch
-        data_config["batches"] = (
-            pd.Index(adata.obs[use_batch])
-            .dropna()
-            .drop_duplicates()
-            .sort_values()
-            .to_numpy()
-        )  # AnnData does not support saving pd.Index in uns
+        batch_series = adata.obs[use_batch]
+        if pd.api.types.is_categorical_dtype(batch_series):
+            batches = pd.Index(batch_series.cat.categories)
+        else:
+            batches = pd.Index(batch_series).dropna().drop_duplicates()
+        data_config["batches"] = batches.sort_values().to_numpy()
     else:
         data_config["use_batch"] = None
         data_config["batches"] = None
@@ -161,6 +160,18 @@ def load_model(fname: os.PathLike) -> Model:
     return model
 
 
+def _shared_observed_batches_match(adatas: Mapping[str, AnnData], use_batch: Optional[str]) -> bool:
+    if not use_batch:
+        return False
+    observed_sets = []
+    for adata in adatas.values():
+        if use_batch not in adata.obs:
+            return False
+        observed = pd.Index(adata.obs[use_batch].dropna().astype(str).unique()).sort_values()
+        observed_sets.append(tuple(observed))
+    return len(set(observed_sets)) == 1
+
+
 @logged
 def fit_SCGLUE(
     adatas: Mapping[str, AnnData],
@@ -171,6 +182,7 @@ def fit_SCGLUE(
     compile_kws: Kws = None,
     fit_kws: Kws = None,
     balance_kws: Kws = None,
+    align_support_kws: Kws = None,
 ) -> SCGLUEModel:
     r"""
     Fit GLUE model to integrate single-cell multi-omics data
@@ -206,6 +218,12 @@ def fit_SCGLUE(
     balance_kws
         Balancing weight estimation keyword arguments
         (see :func:`scglue.data.estimate_balancing_weight`)
+    align_support_kws
+        Unsupported-cell support estimation keyword arguments
+        (see :func:`scglue.data.estimate_alignment_support`).
+        When specified, the estimated alignment weight is multiplied with
+        the balancing weight (if present) and used as discriminator weight
+        during fine-tuning.
 
     Returns
     -------
@@ -216,6 +234,7 @@ def fit_SCGLUE(
     compile_kws = compile_kws or {}
     fit_kws = fit_kws or {}
     balance_kws = balance_kws or {}
+    align_support_kws = align_support_kws or {}
 
     fit_SCGLUE.logger.info("Pretraining SCGLUE model...")
     pretrain_init_kws = init_kws.copy()
@@ -233,8 +252,8 @@ def fit_SCGLUE(
     if "directory" in pretrain_fit_kws:
         pretrain.save(os.path.join(pretrain_fit_kws["directory"], "pretrain.dill"))
 
-    if not skip_balance:
-        fit_SCGLUE.logger.info("Estimating balancing weight...")
+    support_enabled = bool(align_support_kws)
+    if not skip_balance or support_enabled:
         for k, adata in adatas.items():
             adata.obsm[f"X_{config.TMP_PREFIX}"] = pretrain.encode_data(k, adata)
         if init_kws.get("shared_batches"):
@@ -242,17 +261,53 @@ def fit_SCGLUE(
                 adata.uns[config.ANNDATA_KEY]["use_batch"] for adata in adatas.values()
             )
             use_batch = use_batch.pop() if len(use_batch) == 1 else None
+            if use_batch and not _shared_observed_batches_match(adatas, use_batch):
+                fit_SCGLUE.logger.warning(
+                    "Observed batch sets do not fully match across modalities; "
+                    "falling back to global balancing/support estimation."
+                )
+                use_batch = None
         else:
             use_batch = None
-        estimate_balancing_weight(
-            *adatas.values(),
-            use_rep=f"X_{config.TMP_PREFIX}",
-            use_batch=use_batch,
-            key_added="balancing_weight",
-            **balance_kws,
-        )
+        if not skip_balance:
+            fit_SCGLUE.logger.info("Estimating balancing weight...")
+            estimate_balancing_weight(
+                *adatas.values(),
+                use_rep=f"X_{config.TMP_PREFIX}",
+                use_batch=use_batch,
+                key_added="balancing_weight",
+                **balance_kws,
+            )
+        if support_enabled:
+            fit_SCGLUE.logger.info("Estimating unsupported-cell alignment weight...")
+            estimate_alignment_support(
+                *adatas.values(),
+                use_rep=f"X_{config.TMP_PREFIX}",
+                use_batch=use_batch,
+                **align_support_kws,
+            )
         for adata in adatas.values():
-            adata.uns[config.ANNDATA_KEY]["use_dsc_weight"] = "balancing_weight"
+            if not skip_balance and support_enabled:
+                combined = (
+                    adata.obs["balancing_weight"].to_numpy()
+                    * adata.obs[
+                        align_support_kws.get("weight_key", "unsupported_align_weight")
+                    ].to_numpy()
+                )
+                combined_sum = combined.sum()
+                if combined_sum > 0:
+                    combined /= combined_sum / combined.size
+                else:
+                    combined[:] = 1.0
+                combined = np.where(np.isfinite(combined), combined, 1.0)
+                adata.obs["combined_dsc_weight"] = combined
+                adata.uns[config.ANNDATA_KEY]["use_dsc_weight"] = "combined_dsc_weight"
+            elif not skip_balance:
+                adata.uns[config.ANNDATA_KEY]["use_dsc_weight"] = "balancing_weight"
+            elif support_enabled:
+                adata.uns[config.ANNDATA_KEY]["use_dsc_weight"] = align_support_kws.get(
+                    "weight_key", "unsupported_align_weight"
+                )
             del adata.obsm[f"X_{config.TMP_PREFIX}"]
 
     fit_SCGLUE.logger.info("Fine-tuning SCGLUE model...")

@@ -21,7 +21,6 @@ import scipy.sparse
 import scipy.stats
 from anndata import AnnData
 from networkx.algorithms.bipartite import biadjacency_matrix
-from pybedtools import BedTool
 from pybedtools.cbedtools import Interval
 from statsmodels.stats.multitest import fdrcorrection
 from tqdm.auto import tqdm
@@ -121,7 +120,7 @@ class Bed(ConstrainedDataFrame):
         bedtool
             Converted :class:`pybedtools.BedTool` object
         """
-        return BedTool(
+        return pybedtools.BedTool(
             Interval(
                 row["chrom"],
                 row["chromStart"],

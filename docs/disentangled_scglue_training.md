@@ -122,9 +122,22 @@ glue = scglue.models.fit_SCGLUE(
         "max_epochs": 200,
         "patience": 40,
         "reduce_lr_patience": 20,
-    }
+    },
+    align_support_kws={
+        "n_neighbors": 15,
+        "strategy": "soft",
+        "min_weight": 0.05,
+    },
 )
 ```
+
+其中 `align_support_kws` 会在预训练后的共享空间里估计每个细胞的跨模态支持度：
+
+- `unsupported_score`：细胞是否被其它模态支持的分数
+- `unsupported_align_weight`：对抗对齐部分使用的软权重
+- 如果同时启用 balancing，最终判别器权重为两者乘积后的 `combined_dsc_weight`
+
+推荐先使用 `strategy="soft"`，而不是直接把疑似 unsupported 细胞从 GAN 对齐中完全移除。
 
 
 ## 4. 手动训练方式

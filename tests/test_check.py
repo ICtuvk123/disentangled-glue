@@ -55,3 +55,22 @@ def test_cmd_checker():
     )
     with pytest.raises(RuntimeError):
         cmd_checker.check()
+
+
+def test_bedtools_checker_honors_runtime_config(monkeypatch):
+    commands = []
+
+    def fake_run_command(command, **kwargs):
+        commands.append(command)
+        return ["bedtools v2.31.1"]
+
+    monkeypatch.setattr(scglue.check, "run_command", fake_run_command)
+    old_bedtools_path = scglue.check.config.BEDTOOLS_PATH
+    try:
+        scglue.check.config.BEDTOOLS_PATH = "/tmp/custom-bedtools"
+        scglue.check.CHECKERS["bedtools"].check()
+    finally:
+        scglue.check.config.BEDTOOLS_PATH = old_bedtools_path
+
+    assert commands == ["/tmp/custom-bedtools --version"]
+

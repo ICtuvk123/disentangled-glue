@@ -3,11 +3,11 @@ Evaluate a trained SCGLUE run with the full scib-metrics suite (Benchmarker2).
 
 Usage
 -----
-    # Evaluate best run (no PCR — combined_glue.h5ad has no raw X)
+    # Evaluate best run (default: PCR disabled for tri-modal BMMC)
     python s06_eval.py --run-dir s06_sweep/run_023 --output-dir s06_eval
 
-    # Enable PCR by supplying the preprocessed per-modality h5ads
-    python s06_eval.py --run-dir s06_sweep/run_023 --preprocessed-dir s06_sweep/preprocessed --output-dir s06_eval
+    # Enable PCR with a proper shared pre-integration baseline
+    python s06_eval.py --run-dir s06_sweep/run_023 --feature-aligned s01_preprocessing/feature_aligned.h5ad --enable-pcr --output-dir s06_eval
 """
 
 import argparse
@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
+os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba-cache")
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -174,8 +176,13 @@ class Benchmarker2:
 
     def prepare(self, neighbor_computer: Callable[[np.ndarray, int], NeighborsResults] | None = None) -> None:
         if self._pre_integrated_embedding_obsm_key is None:
-            sc.tl.pca(self._adata, use_highly_variable=False)
-            self._pre_integrated_embedding_obsm_key = "X_pca"
+            # Some BMMC combined outputs only store latent embeddings in `obsm`
+            # and have no feature matrix to run PCA on.
+            if self._adata.n_vars >= 2 and self._adata.X is not None:
+                n_comps = min(50, self._adata.n_obs, self._adata.n_vars) - 1
+                if n_comps >= 1:
+                    sc.tl.pca(self._adata, n_comps=n_comps, use_highly_variable=False)
+                    self._pre_integrated_embedding_obsm_key = "X_pca"
         for emb_key in self._embedding_obsm_keys:
             self._emb_adatas[emb_key] = AnnData(self._adata.obsm[emb_key], obs=self._adata.obs)
             self._emb_adatas[emb_key].obs[_BATCH] = np.asarray(self._adata.obs[self._batch_key].values)
@@ -360,9 +367,15 @@ def parse_args() -> argparse.Namespace:
                    help="obs column for batch labels")
     p.add_argument("--domain-key", default="domain",
                    help="obs column for modality labels (rna/atac/prot)")
+    p.add_argument("--feature-aligned", default=None,
+                   help="Path to feature_aligned(.h5ad) from s01_preprocessing. "
+                        "Required for a valid PCR baseline on tri-modal BMMC.")
     p.add_argument("--preprocessed-dir", default=None,
-                   help="Path to preprocessed h5ads (rna_pp.h5ad, atac_pp.h5ad, prot_pp.h5ad). "
-                        "When provided, enables PCR comparison metrics.")
+                   help="Deprecated fallback path to preprocessed h5ads. "
+                        "Kept for backward compatibility; use --feature-aligned for PCR.")
+    p.add_argument("--enable-pcr", action="store_true",
+                   help="Enable PCR comparison metrics. For tri-modal BMMC this should "
+                        "be used together with --feature-aligned.")
     p.add_argument("--n-jobs", type=int, default=8,
                    help="Parallel jobs for neighbor computation")
     p.add_argument("--no-show", action="store_true",
@@ -370,25 +383,54 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def build_pre_integrated_embedding(preprocessed_dir: Path, adata: AnnData) -> np.ndarray:
-    """Concatenate per-modality PCA/LSI into a pre-integrated embedding aligned to adata.obs_names."""
-    rna  = sc.read(preprocessed_dir / "rna_pp.h5ad")
-    atac = sc.read(preprocessed_dir / "atac_pp.h5ad")
-    prot = sc.read(preprocessed_dir / "prot_pp.h5ad")
+def canonicalize_modality(value: Any) -> str:
+    key = str(value).strip().lower()
+    mapping = {
+        "0": "rna",
+        "1": "atac",
+        "2": "prot",
+        "gex": "rna",
+        "rna": "rna",
+        "atac": "atac",
+        "adt": "prot",
+        "protein": "prot",
+        "prot": "prot",
+    }
+    return mapping.get(key, key)
 
-    rna_index  = pd.Index([f"rna:{i}"  for i in rna.obs_names])
-    atac_index = pd.Index([f"atac:{i}" for i in atac.obs_names])
-    prot_index = pd.Index([f"prot:{i}" for i in prot.obs_names])
 
-    dim = rna.obsm["X_pca"].shape[1]
-    pre = pd.DataFrame(
-        np.zeros((adata.n_obs, dim), dtype=np.float32),
-        index=adata.obs_names,
+def load_feature_aligned(
+    path: Path, obs_names: pd.Index, domain_key: str = "modality"
+) -> AnnData:
+    """Load and reorder feature_aligned.h5ad to match combined_glue obs_names."""
+    aligned = sc.read(path)
+    if domain_key in aligned.obs:
+        modality_col = domain_key
+    elif "modality" in aligned.obs:
+        modality_col = "modality"
+    else:
+        raise ValueError(
+            "feature_aligned.h5ad must contain a modality/domain column. "
+            f"Tried `{domain_key}` and `modality`."
+        )
+
+    prefixed_index = pd.Index(
+        [
+            f"{canonicalize_modality(mod)}:{obs_name}"
+            for obs_name, mod in zip(aligned.obs_names, aligned.obs[modality_col])
+        ]
     )
-    pre.loc[rna_index]  = rna.obsm["X_pca"][:, :dim]
-    pre.loc[atac_index] = atac.obsm["X_lsi"][:, :dim]
-    pre.loc[prot_index] = prot.obsm["X_pca"][:, :dim]
-    return pre.to_numpy()
+    aligned.obs_names = prefixed_index
+    if not aligned.obs_names.is_unique:
+        raise ValueError("feature_aligned.h5ad produces non-unique prefixed obs_names")
+
+    missing = obs_names.difference(aligned.obs_names)
+    if not missing.empty:
+        raise ValueError(
+            "feature_aligned.h5ad is missing cells required by combined_glue.h5ad; "
+            f"first missing entries: {missing[:5].tolist()}"
+        )
+    return aligned[obs_names].copy()
 
 
 def main() -> None:
@@ -402,10 +444,23 @@ def main() -> None:
     adata = sc.read(run_dir / "combined_glue.h5ad")
     adata.obsm["X_embed"] = adata.obsm["X_glue"]
 
-    enable_pcr = args.preprocessed_dir is not None
+    enable_pcr = args.enable_pcr and args.feature_aligned is not None
+    if args.enable_pcr and args.feature_aligned is None:
+        raise ValueError("`--enable-pcr` now requires `--feature-aligned`!")
+    if args.preprocessed_dir is not None:
+        print("Ignoring deprecated `--preprocessed-dir`; use `--feature-aligned` for PCR.")
     if enable_pcr:
-        print("Building pre-integrated embedding for PCR ...")
-        adata.obsm["X_pre"] = build_pre_integrated_embedding(Path(args.preprocessed_dir), adata)
+        print("Loading shared feature-aligned baseline for PCR ...")
+        aligned = load_feature_aligned(Path(args.feature_aligned), adata.obs_names, args.domain_key)
+        var = aligned.var.copy()
+        if "highly_variable" not in var:
+            var["highly_variable"] = True
+        adata = sc.AnnData(
+            X=aligned.X.copy(),
+            obs=adata.obs.copy(),
+            var=var,
+            obsm=dict(adata.obsm),
+        )
 
     bm = Benchmarker2(
         adata,
@@ -416,7 +471,7 @@ def main() -> None:
         bio_conservation_metrics=BioConservation2(),
         batch_correction_metrics=BatchCorrection2(pcr_comparison_b=enable_pcr),
         modality_integration_metrics=ModalityIntegration2(pcr_comparison_m=enable_pcr),
-        pre_integrated_embedding_obsm_key="X_pre" if enable_pcr else None,
+        pre_integrated_embedding_obsm_key=None,
         n_jobs=args.n_jobs,
         progress_bar=True,
     )

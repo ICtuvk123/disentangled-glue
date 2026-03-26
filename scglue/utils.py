@@ -5,6 +5,7 @@ Miscellaneous utilities
 import logging
 import os
 import signal
+from pathlib import Path
 import subprocess
 import sys
 from collections import defaultdict
@@ -445,6 +446,16 @@ class ConfigManager(metaclass=SingletonMeta):
     @BEDTOOLS_PATH.setter
     def BEDTOOLS_PATH(self, bedtools_path: str) -> None:
         self._BEDTOOLS_PATH = bedtools_path
+        if not bedtools_path:
+            set_bedtools_path("")
+            return
+        bedtools_path_obj = Path(bedtools_path)
+        if bedtools_path_obj.name.startswith("bedtools"):
+            if bedtools_path_obj.parent == Path("."):
+                set_bedtools_path("")
+            else:
+                set_bedtools_path(os.fspath(bedtools_path_obj.parent))
+            return
         set_bedtools_path(bedtools_path)
 
 

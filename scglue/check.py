@@ -6,7 +6,7 @@ import importlib
 import re
 import types
 from abc import abstractmethod
-from typing import Optional
+from typing import Callable, Optional, Union
 
 from packaging.version import parse
 
@@ -109,7 +109,7 @@ class CmdChecker(Checker):
     def __init__(
         self,
         name: str,
-        cmd: str,
+        cmd: Union[str, Callable[[], str]],
         vregex: str,
         vmin: Optional[str] = None,
         install_hint: Optional[str] = None,
@@ -119,8 +119,9 @@ class CmdChecker(Checker):
         self.vregex = vregex
 
     def check(self) -> None:
+        cmd = self.cmd() if callable(self.cmd) else self.cmd
         output_lines = run_command(
-            self.cmd,
+            cmd,
             log_command=False,
             print_output=False,
             err_message={127: " ".join([self.vreq_hint, self.install_hint])},
@@ -164,7 +165,7 @@ INSTALL_HINTS = types.SimpleNamespace(
 CHECKERS = dict(
     bedtools=CmdChecker(
         "bedtools",
-        f"{config.BEDTOOLS_PATH or 'bedtools'} --version",
+        lambda: f"{config.BEDTOOLS_PATH or 'bedtools'} --version",
         r"v([0-9\.]+)",
         vmin="2.29.2",
         install_hint=INSTALL_HINTS.bedtools,

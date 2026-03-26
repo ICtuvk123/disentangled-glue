@@ -69,22 +69,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--multiome",
-        default="data/GSE194122_openproblems_neurips2021_multiome_BMMC_processed.h5ad",
+        default="GSE194122_openproblems_neurips2021_multiome_BMMC_processed.h5ad",
         help="Relative or absolute path to the processed BMMC multiome h5ad",
     )
     parser.add_argument(
         "--cite",
-        default="data/GSE194122_openproblems_neurips2021_cite_BMMC_processed.h5ad",
+        default="GSE194122_openproblems_neurips2021_cite_BMMC_processed.h5ad",
         help="Relative or absolute path to the processed BMMC CITE-seq h5ad",
     )
     parser.add_argument(
         "--gtf",
-        default="data/gencode.v38.primary_assembly.annotation.gtf",
+        default="gencode.v38.chr_patch_hapl_scaff.annotation.gtf",
         help="Relative or absolute path to the GTF used for ATAC gene activity",
     )
     parser.add_argument(
         "--hgnc",
-        default="data/hgnc_complete_set.txt",
+        default="hgnc_complete_set.txt",
         help="Relative or absolute path to the HGNC mapping table",
     )
     parser.add_argument(
@@ -107,7 +107,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sampled-only",
         action="store_true",
-        help="Only generate the sampled RNA/ATAC/protein files needed by GLUE",
+        help="Only generate sampled RNA/ATAC/protein files for GLUE baselines; does not write feature_aligned*.h5ad",
+    )
+    parser.add_argument(
+        "--skip-full",
+        action="store_true",
+        help="Skip full-size ATAC gene activity and only write sampled scMRDR inputs",
     )
     return parser.parse_args()
 
@@ -123,7 +128,7 @@ def subset_obsm(adata: ad.AnnData, keys: list[str]) -> None:
 
 def qc_rna(rna: ad.AnnData) -> ad.AnnData:
     rna = rna.copy()
-    rna.var["mt"] = rna.var_names.str.startswith("MT-")
+    rna.var["mt"] = rna.var_names.str.upper().str.startswith("MT-")
     sc.pp.calculate_qc_metrics(
         rna, qc_vars=["mt"], percent_top=None, log1p=False, inplace=True
     )
@@ -157,6 +162,14 @@ def qc_atac(atac: ad.AnnData) -> ad.AnnData:
 
 
 def build_atac_gene_activity(atac: ad.AnnData, gtf: Path) -> ad.AnnData:
+    # Older episcanpy releases still import `NaN` from numpy directly.
+    # Newer numpy versions only expose `nan`, so add the legacy alias here.
+    if not hasattr(np, "NaN"):
+        np.NaN = np.nan
+    # Older episcanpy releases import `read` from anndata, which was removed
+    # in newer anndata versions. Restore the alias for compatibility.
+    if not hasattr(ad, "read"):
+        ad.read = ad.read_h5ad
     import episcanpy as epi
 
     atac_for_ga = atac.copy()
@@ -232,6 +245,26 @@ def sample_adata(
     return adata[indices, :].copy(), indices
 
 
+def write_feature_aligned(
+    output_path: Path, rna: ad.AnnData, atac_gas: ad.AnnData, prot: ad.AnnData
+) -> None:
+    genelist = rna.var.index[rna.var["highly_variable"]].tolist()
+    peaklist = atac_gas.var.index[atac_gas.var["highly_variable"]].tolist()
+    aligned_features = list(set(genelist) | set(peaklist) | set(prot.var.index))
+
+    feature_aligned = ad.concat(
+        [rna, atac_gas, prot], join="outer", label="modality", keys=["rna", "atac", "prot"]
+    )
+    feature_aligned.uns["rna_hvg"] = genelist
+    feature_aligned.uns["atac_hvg"] = peaklist
+    feature_aligned.uns["prot_hvg"] = prot.var.index.tolist()
+    feature_aligned.uns["rna_nz"] = list(set(aligned_features) & set(rna.var.index))
+    feature_aligned.uns["atac_nz"] = list(set(aligned_features) & set(atac_gas.var.index))
+    feature_aligned.uns["prot_nz"] = list(set(aligned_features) & set(prot.var.index))
+    feature_aligned = feature_aligned[:, aligned_features].copy()
+    feature_aligned.write_h5ad(output_path)
+
+
 def main() -> None:
     args = parse_args()
     base_dir = Path(__file__).resolve().parent
@@ -272,6 +305,9 @@ def main() -> None:
     prot = process_protein(prot)
 
     rna = ad.concat([rna_multiome, rna_cite], join="outer")
+    sc.pp.highly_variable_genes(
+        rna, batch_key="batch", min_mean=0.02, max_mean=4, min_disp=0.5
+    )
     rna.write_h5ad(output_dir / "RNA_counts_qc.h5ad")
     rna_cite.write_h5ad(output_dir / "RNA_cite_qc.h5ad")
     prot.write_h5ad(output_dir / "protein_counts_qc.h5ad")
@@ -279,7 +315,7 @@ def main() -> None:
     map_celltypes(rna, atac, prot)
 
     hgnc_sep = "\t" if hgnc_path.suffix in {".txt", ".tsv"} else ","
-    hgnc = pd.read_csv(hgnc_path, sep=hgnc_sep)
+    hgnc = pd.read_csv(hgnc_path, sep=hgnc_sep, low_memory=False)
     protein_gene_map = build_protein_gene_map(prot, hgnc)
     protein_gene_map.to_csv(output_dir / "protein_gene_map.tsv", sep="\t", index=False)
 
@@ -303,54 +339,33 @@ def main() -> None:
     if args.sampled_only:
         return
 
+    if args.skip_full:
+        atac_gas_sampled = build_atac_gene_activity(atac_sampled, gtf_path)
+        atac_gas_sampled.obs["celltype"] = atac_gas_sampled.obs["cell_type"].map(
+            FINAL_CELLTYPE_MAPPING
+        )
+        atac_gas_sampled.write_h5ad(output_dir / "ATAC_gas_sampled.h5ad")
+        write_feature_aligned(
+            output_dir / "feature_aligned_sampled.h5ad",
+            rna_sampled,
+            atac_gas_sampled,
+            prot_sampled,
+        )
+        return
+
     atac_gas = build_atac_gene_activity(atac, gtf_path)
     atac_gas.obs["celltype"] = atac_gas.obs["cell_type"].map(FINAL_CELLTYPE_MAPPING)
     atac_gas.write_h5ad(output_dir / "ATAC_gas.h5ad")
-
-    sc.pp.highly_variable_genes(
-        rna, batch_key="batch", min_mean=0.02, max_mean=4, min_disp=0.5
-    )
-    genelist = rna.var.index[rna.var["highly_variable"]].tolist()
-    peaklist = atac_gas.var.index[atac_gas.var["highly_variable"]].tolist()
-    aligned_features = list(set(genelist) | set(peaklist) | set(prot.var.index))
-
-    feature_aligned = ad.concat([rna, atac_gas, prot], join="outer", label="modality")
-    feature_aligned.uns["rna_hvg"] = genelist
-    feature_aligned.uns["atac_hvg"] = peaklist
-    feature_aligned.uns["prot_hvg"] = prot.var.index.tolist()
-    feature_aligned.uns["rna_nz"] = list(set(aligned_features) & set(rna.var.index))
-    feature_aligned.uns["atac_nz"] = list(set(aligned_features) & set(atac_gas.var.index))
-    feature_aligned.uns["prot_nz"] = list(set(aligned_features) & set(prot.var.index))
-    feature_aligned = feature_aligned[:, aligned_features].copy()
-    feature_aligned.write_h5ad(output_dir / "feature_aligned.h5ad")
+    write_feature_aligned(output_dir / "feature_aligned.h5ad", rna, atac_gas, prot)
 
     atac_gas_sampled = atac_gas[atac_indices, :].copy()
     atac_gas_sampled.write_h5ad(output_dir / "ATAC_gas_sampled.h5ad")
-
-    feature_aligned_sampled = ad.concat(
-        [rna_sampled, atac_gas_sampled, prot_sampled], join="outer", label="modality"
+    write_feature_aligned(
+        output_dir / "feature_aligned_sampled.h5ad",
+        rna_sampled,
+        atac_gas_sampled,
+        prot_sampled,
     )
-    sampled_genelist = rna_sampled.var.index[rna_sampled.var["highly_variable"]].tolist()
-    sampled_peaklist = atac_gas_sampled.var.index[
-        atac_gas_sampled.var["highly_variable"]
-    ].tolist()
-    sampled_aligned_features = list(
-        set(sampled_genelist) | set(sampled_peaklist) | set(prot_sampled.var.index)
-    )
-    feature_aligned_sampled.uns["rna_hvg"] = sampled_genelist
-    feature_aligned_sampled.uns["atac_hvg"] = sampled_peaklist
-    feature_aligned_sampled.uns["prot_hvg"] = prot_sampled.var.index.tolist()
-    feature_aligned_sampled.uns["rna_nz"] = list(
-        set(sampled_aligned_features) & set(rna_sampled.var.index)
-    )
-    feature_aligned_sampled.uns["atac_nz"] = list(
-        set(sampled_aligned_features) & set(atac_gas_sampled.var.index)
-    )
-    feature_aligned_sampled.uns["prot_nz"] = list(
-        set(sampled_aligned_features) & set(prot_sampled.var.index)
-    )
-    feature_aligned_sampled = feature_aligned_sampled[:, sampled_aligned_features].copy()
-    feature_aligned_sampled.write_h5ad(output_dir / "feature_aligned_sampled.h5ad")
 
 
 if __name__ == "__main__":

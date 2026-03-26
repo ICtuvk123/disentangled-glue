@@ -86,6 +86,30 @@ def test_estimate_balancing_weight(rna_pp, atac_pp):
     )  # NOTE: Smoke test
 
 
+def test_estimate_alignment_support(rna_pp, atac_pp):
+    atac_pp.obsm["X_pca"] = atac_pp.obsm["X_lsi"]
+    with pytest.raises(ValueError):
+        scglue.data.estimate_alignment_support(rna_pp, atac_pp)
+    scglue.data.estimate_alignment_support(
+        rna_pp, atac_pp, use_rep="X_pca"
+    )  # NOTE: Smoke test
+    scglue.data.estimate_alignment_support(
+        rna_pp,
+        atac_pp,
+        use_rep="X_pca",
+        use_batch="batch",
+        strategy="hard",
+        n_neighbors=2,
+    )  # NOTE: Smoke test
+    for adata in (rna_pp, atac_pp):
+        assert "unsupported_score" in adata.obs
+        assert "unsupported_align_weight" in adata.obs
+        assert "unsupported_hard_mask" in adata.obs
+        assert np.isfinite(adata.obs["unsupported_score"]).all()
+        assert np.isfinite(adata.obs["unsupported_align_weight"]).all()
+        assert adata.obs["unsupported_score"].between(0, 1).all()
+
+
 def test_metacell_corr(rna_pp, atac_pp, guidance):
     atac_pp.obsm["X_pca"] = atac_pp.obsm["X_lsi"]
     with pytest.raises(ValueError):

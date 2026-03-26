@@ -33,3 +33,30 @@ def test_get_rs():
     rs1 = scglue.utils.get_rs()
     rs2 = scglue.utils.get_rs()
     assert rs1 is rs2
+
+
+def test_bedtools_path_accepts_executable_path(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(scglue.utils, "set_bedtools_path", calls.append)
+    old_bedtools_path = scglue.config.BEDTOOLS_PATH
+    try:
+        scglue.config.BEDTOOLS_PATH = "/tmp/custom-bin/bedtools"
+        assert scglue.config.BEDTOOLS_PATH == "/tmp/custom-bin/bedtools"
+        assert calls[-1] == "/tmp/custom-bin"
+    finally:
+        scglue.config.BEDTOOLS_PATH = old_bedtools_path
+
+
+def test_bedtools_path_accepts_command_name(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(scglue.utils, "set_bedtools_path", calls.append)
+    old_bedtools_path = scglue.config.BEDTOOLS_PATH
+    try:
+        scglue.config.BEDTOOLS_PATH = "bedtools"
+        assert scglue.config.BEDTOOLS_PATH == "bedtools"
+        assert calls[-1] == ""
+    finally:
+        scglue.config.BEDTOOLS_PATH = old_bedtools_path
+
