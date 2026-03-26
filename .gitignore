@@ -65,3 +65,6 @@ dist
 
 # local env
 .conda-envs/
+
+# local env
+.conda-envs/
