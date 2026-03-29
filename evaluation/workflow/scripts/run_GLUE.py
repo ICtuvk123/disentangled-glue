@@ -177,7 +177,7 @@ def main(args: argparse.Namespace) -> None:
     glue.compile(lam_graph=args.lam_graph, lam_align=args.lam_align, lr=args.lr)
     glue.fit(
         {"rna": rna, "atac": atac},
-        graph, edge_weight="weight", edge_sign="sign",
+        graph,
         neg_samples=args.neg_samples,
         val_split=args.val_split,
         data_batch_size=args.data_batch_size,
@@ -212,7 +212,7 @@ def main(args: argparse.Namespace) -> None:
     glue.compile(lam_graph=args.lam_graph, lam_align=args.lam_align, lr=args.lr)
     glue.fit(
         {"rna": rna, "atac": atac},
-        graph, edge_weight="weight", edge_sign="sign",
+        graph,
         neg_samples=args.neg_samples,
         val_split=args.val_split,
         data_batch_size=args.data_batch_size,

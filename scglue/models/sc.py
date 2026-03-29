@@ -689,9 +689,11 @@ class DisentangledNormalDataDecoder(NormalDataDecoder):
     Disentangled normal data decoder
     """
 
-    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1) -> None:
-        super().__init__(out_features, n_batches=n_batches)
-        self.private_proj = torch.nn.Linear(private_dim, out_features)
+    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1, batch_embed_dim: int = 8) -> None:
+        DataDecoder.__init__(self, out_features, n_batches=n_batches)
+        self.std_lin = torch.nn.Parameter(torch.zeros(n_batches, out_features))
+        self.batch_embed = torch.nn.Embedding(n_batches, batch_embed_dim)
+        self.private_proj = torch.nn.Linear(private_dim + batch_embed_dim, out_features)
 
     def forward(
         self,
@@ -701,8 +703,8 @@ class DisentangledNormalDataDecoder(NormalDataDecoder):
         b: torch.Tensor,
         l: Optional[torch.Tensor],
     ) -> D.Normal:
-        scale = F.softplus(self.scale_lin[b])
-        loc = scale * (z_shared @ v.t()) + self.private_proj(z_private) + self.bias[b]
+        c_emb = self.batch_embed(b)
+        loc = (z_shared @ v.t()) + self.private_proj(torch.cat([z_private, c_emb], dim=1))
         std = F.softplus(self.std_lin[b]) + EPS
         return D.Normal(loc, std)
 
@@ -712,9 +714,12 @@ class DisentangledZINDataDecoder(ZINDataDecoder):
     Disentangled zero-inflated normal data decoder
     """
 
-    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1) -> None:
-        super().__init__(out_features, n_batches=n_batches)
-        self.private_proj = torch.nn.Linear(private_dim, out_features)
+    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1, batch_embed_dim: int = 8) -> None:
+        DataDecoder.__init__(self, out_features, n_batches=n_batches)
+        self.std_lin = torch.nn.Parameter(torch.zeros(n_batches, out_features))
+        self.zi_logits = torch.nn.Parameter(torch.zeros(n_batches, out_features))
+        self.batch_embed = torch.nn.Embedding(n_batches, batch_embed_dim)
+        self.private_proj = torch.nn.Linear(private_dim + batch_embed_dim, out_features)
 
     def forward(
         self,
@@ -724,8 +729,8 @@ class DisentangledZINDataDecoder(ZINDataDecoder):
         b: torch.Tensor,
         l: Optional[torch.Tensor],
     ) -> ZIN:
-        scale = F.softplus(self.scale_lin[b])
-        loc = scale * (z_shared @ v.t()) + self.private_proj(z_private) + self.bias[b]
+        c_emb = self.batch_embed(b)
+        loc = (z_shared @ v.t()) + self.private_proj(torch.cat([z_private, c_emb], dim=1))
         std = F.softplus(self.std_lin[b]) + EPS
         return ZIN(self.zi_logits[b].expand_as(loc), loc, std)
 
@@ -735,9 +740,12 @@ class DisentangledZILNDataDecoder(ZILNDataDecoder):
     Disentangled zero-inflated log-normal data decoder
     """
 
-    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1) -> None:
-        super().__init__(out_features, n_batches=n_batches)
-        self.private_proj = torch.nn.Linear(private_dim, out_features)
+    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1, batch_embed_dim: int = 8) -> None:
+        DataDecoder.__init__(self, out_features, n_batches=n_batches)
+        self.std_lin = torch.nn.Parameter(torch.zeros(n_batches, out_features))
+        self.zi_logits = torch.nn.Parameter(torch.zeros(n_batches, out_features))
+        self.batch_embed = torch.nn.Embedding(n_batches, batch_embed_dim)
+        self.private_proj = torch.nn.Linear(private_dim + batch_embed_dim, out_features)
 
     def forward(
         self,
@@ -747,8 +755,8 @@ class DisentangledZILNDataDecoder(ZILNDataDecoder):
         b: torch.Tensor,
         l: Optional[torch.Tensor],
     ) -> ZILN:
-        scale = F.softplus(self.scale_lin[b])
-        loc = scale * (z_shared @ v.t()) + self.private_proj(z_private) + self.bias[b]
+        c_emb = self.batch_embed(b)
+        loc = (z_shared @ v.t()) + self.private_proj(torch.cat([z_private, c_emb], dim=1))
         std = F.softplus(self.std_lin[b]) + EPS
         return ZILN(self.zi_logits[b].expand_as(loc), loc, std)
 
@@ -758,9 +766,11 @@ class DisentangledNBDataDecoder(NBDataDecoder):
     Disentangled negative binomial data decoder
     """
 
-    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1) -> None:
-        super().__init__(out_features, n_batches=n_batches)
-        self.private_proj = torch.nn.Linear(private_dim, out_features)
+    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1, batch_embed_dim: int = 8) -> None:
+        DataDecoder.__init__(self, out_features, n_batches=n_batches)
+        self.log_theta = torch.nn.Parameter(torch.zeros(n_batches, out_features))
+        self.batch_embed = torch.nn.Embedding(n_batches, batch_embed_dim)
+        self.private_proj = torch.nn.Linear(private_dim + batch_embed_dim, out_features)
 
     def forward(
         self,
@@ -770,8 +780,8 @@ class DisentangledNBDataDecoder(NBDataDecoder):
         b: torch.Tensor,
         l: torch.Tensor,
     ) -> D.NegativeBinomial:
-        scale = F.softplus(self.scale_lin[b])
-        logit_mu = scale * (z_shared @ v.t()) + self.private_proj(z_private) + self.bias[b]
+        c_emb = self.batch_embed(b)
+        logit_mu = (z_shared @ v.t()) + self.private_proj(torch.cat([z_private, c_emb], dim=1))
         mu = F.softmax(logit_mu, dim=1) * l
         log_theta = self.log_theta[b]
         return D.NegativeBinomial(log_theta.exp(), logits=(mu + EPS).log() - log_theta)
@@ -782,10 +792,13 @@ class DisentangledNBMixtureDataDecoder(NBMixtureDataDecoder):
     Disentangled mixture negative binomial data decoder
     """
 
-    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1) -> None:
-        super().__init__(out_features, n_batches=n_batches)
-        self.private_proj1 = torch.nn.Linear(private_dim, out_features)
-        self.private_proj2 = torch.nn.Linear(private_dim, out_features)
+    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1, batch_embed_dim: int = 8) -> None:
+        DataDecoder.__init__(self, out_features, n_batches=n_batches)
+        self.log_theta = torch.nn.Parameter(torch.zeros(n_batches, out_features))
+        self.zi_logits = torch.nn.Parameter(torch.zeros(n_batches, out_features))
+        self.batch_embed = torch.nn.Embedding(n_batches, batch_embed_dim)
+        self.private_proj1 = torch.nn.Linear(private_dim + batch_embed_dim, out_features)
+        self.private_proj2 = torch.nn.Linear(private_dim + batch_embed_dim, out_features)
 
     def forward(
         self,
@@ -795,13 +808,11 @@ class DisentangledNBMixtureDataDecoder(NBMixtureDataDecoder):
         b: torch.Tensor,
         l: torch.Tensor,
     ) -> D.MixtureSameFamily:
-        scale = F.softplus(self.scale_lin[b])
-        logit_mu1 = (
-            scale * (z_shared @ v.t()) + self.private_proj1(z_private) + self.bias1[b]
-        )
-        logit_mu2 = (
-            scale * (z_shared @ v.t()) + self.private_proj2(z_private) + self.bias2[b]
-        )
+        c_emb = self.batch_embed(b)
+        z_private_cat = torch.cat([z_private, c_emb], dim=1)
+        bilinear = z_shared @ v.t()
+        logit_mu1 = bilinear + self.private_proj1(z_private_cat)
+        logit_mu2 = bilinear + self.private_proj2(z_private_cat)
 
         mu1 = F.softmax(logit_mu1, dim=1)
         mu2 = F.softmax(logit_mu2, dim=1)
@@ -820,9 +831,12 @@ class DisentangledZINBDataDecoder(ZINBDataDecoder):
     Disentangled zero-inflated negative binomial data decoder
     """
 
-    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1) -> None:
-        super().__init__(out_features, n_batches=n_batches)
-        self.private_proj = torch.nn.Linear(private_dim, out_features)
+    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1, batch_embed_dim: int = 8) -> None:
+        DataDecoder.__init__(self, out_features, n_batches=n_batches)
+        self.log_theta = torch.nn.Parameter(torch.zeros(n_batches, out_features))
+        self.zi_logits = torch.nn.Parameter(torch.zeros(n_batches, out_features))
+        self.batch_embed = torch.nn.Embedding(n_batches, batch_embed_dim)
+        self.private_proj = torch.nn.Linear(private_dim + batch_embed_dim, out_features)
 
     def forward(
         self,
@@ -832,8 +846,8 @@ class DisentangledZINBDataDecoder(ZINBDataDecoder):
         b: torch.Tensor,
         l: Optional[torch.Tensor],
     ) -> ZINB:
-        scale = F.softplus(self.scale_lin[b])
-        logit_mu = scale * (z_shared @ v.t()) + self.private_proj(z_private) + self.bias[b]
+        c_emb = self.batch_embed(b)
+        logit_mu = (z_shared @ v.t()) + self.private_proj(torch.cat([z_private, c_emb], dim=1))
         mu = F.softmax(logit_mu, dim=1) * l
         log_theta = self.log_theta[b]
         return ZINB(
@@ -848,9 +862,11 @@ class DisentangledBetaDataDecoder(BetaDataDecoder):
     Disentangled beta data decoder
     """
 
-    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1) -> None:
-        super().__init__(out_features, n_batches=n_batches)
-        self.private_proj = torch.nn.Linear(private_dim, out_features)
+    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1, batch_embed_dim: int = 8) -> None:
+        DataDecoder.__init__(self, out_features, n_batches=n_batches)
+        self.size_lin = torch.nn.Parameter(torch.zeros(n_batches, out_features))
+        self.batch_embed = torch.nn.Embedding(n_batches, batch_embed_dim)
+        self.private_proj = torch.nn.Linear(private_dim + batch_embed_dim, out_features)
 
     def forward(
         self,
@@ -860,9 +876,9 @@ class DisentangledBetaDataDecoder(BetaDataDecoder):
         b: torch.Tensor,
         l: Optional[torch.Tensor],
     ) -> Beta:
-        scale = F.softplus(self.scale_lin[b])
+        c_emb = self.batch_embed(b)
         size = F.softplus(self.size_lin[b]).clamp(max=self.MAX_SIZE)
-        logit_mu = scale * (z_shared @ v.t()) + self.private_proj(z_private) + self.bias[b]
+        logit_mu = (z_shared @ v.t()) + self.private_proj(torch.cat([z_private, c_emb], dim=1))
         return Beta(logit_mu, size)
 
 
@@ -871,9 +887,11 @@ class DisentangledBetaBinomialDataDecoder(BetaBinomialDataDecoder):
     Disentangled beta binomial data decoder
     """
 
-    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1) -> None:
-        super().__init__(out_features, n_batches=n_batches)
-        self.private_proj = torch.nn.Linear(private_dim, out_features)
+    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1, batch_embed_dim: int = 8) -> None:
+        DataDecoder.__init__(self, out_features, n_batches=n_batches)
+        self.size_lin = torch.nn.Parameter(torch.zeros(n_batches, out_features))
+        self.batch_embed = torch.nn.Embedding(n_batches, batch_embed_dim)
+        self.private_proj = torch.nn.Linear(private_dim + batch_embed_dim, out_features)
 
     def forward(
         self,
@@ -883,9 +901,9 @@ class DisentangledBetaBinomialDataDecoder(BetaBinomialDataDecoder):
         b: torch.Tensor,
         l: Optional[torch.Tensor],
     ) -> BetaBinomial:
-        scale = F.softplus(self.scale_lin[b])
+        c_emb = self.batch_embed(b)
         size = F.softplus(self.size_lin[b]).clamp(max=self.MAX_SIZE)
-        logit_mu = scale * (z_shared @ v.t()) + self.private_proj(z_private) + self.bias[b]
+        logit_mu = (z_shared @ v.t()) + self.private_proj(torch.cat([z_private, c_emb], dim=1))
         return BetaBinomial(logit_mu, size)
 
 
@@ -894,9 +912,10 @@ class DisentangledBernoulliDataDecoder(BernoulliDataDecoder):
     Disentangled Bernoulli data decoder
     """
 
-    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1) -> None:
-        super().__init__(out_features, n_batches=n_batches)
-        self.private_proj = torch.nn.Linear(private_dim, out_features)
+    def __init__(self, out_features: int, private_dim: int, n_batches: int = 1, batch_embed_dim: int = 8) -> None:
+        DataDecoder.__init__(self, out_features, n_batches=n_batches)
+        self.batch_embed = torch.nn.Embedding(n_batches, batch_embed_dim)
+        self.private_proj = torch.nn.Linear(private_dim + batch_embed_dim, out_features)
 
     def forward(
         self,
@@ -906,8 +925,8 @@ class DisentangledBernoulliDataDecoder(BernoulliDataDecoder):
         b: torch.Tensor,
         l: Optional[torch.Tensor],
     ) -> D.Bernoulli:
-        scale = F.softplus(self.scale_lin[b])
-        logits = scale * (z_shared @ v.t()) + self.private_proj(z_private) + self.bias[b]
+        c_emb = self.batch_embed(b)
+        logits = (z_shared @ v.t()) + self.private_proj(torch.cat([z_private, c_emb], dim=1))
         return Bernoulli(logits)
 
 

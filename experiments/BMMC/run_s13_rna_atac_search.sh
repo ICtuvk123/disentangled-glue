@@ -82,7 +82,7 @@ if not rows:
 else:
     df = pd.DataFrame(rows)
     cols = ['trial_id','mode','Total','Bio conservation','Batch correction','Modality integration',
-            'shared_batches','shared_dim','private_dim','lam_align','lam_batch','beta_shared','lam_iso',
+            'shared_batches','shared_dim','private_dim','batch_embed_dim','lam_align','beta_shared','lam_iso',
             'beta_private_rna','beta_private_atac']
     cols = [c for c in cols if c in df.columns]
     df = df[cols].sort_values('Total', ascending=False)

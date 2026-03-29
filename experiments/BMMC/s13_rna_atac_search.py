@@ -55,7 +55,7 @@ SEARCH_SPACE: dict[str, list] = {
     "beta_shared":             [0.5, 0.75, 1.0, 1.25, 1.5],
     "lam_iso":                 [0.5, 1.0, 2.0],
     "lam_align":               [0.03, 0.05, 0.10, 0.20, 0.30, 0.50],
-    "lam_batch":               [0.0, 0.02, 0.05, 0.10, 0.20],
+    "batch_embed_dim":         [4, 8, 16],
     "beta_private_rna":        [0.25, 0.5, 1.0],
     "beta_private_atac":       [0.25, 0.5, 1.0],
     # support-mode params (ignored when mode == "baseline")
@@ -129,7 +129,7 @@ def trial_name(cfg: dict) -> str:
         f"_bs{cfg['beta_shared']}"
         f"_li{cfg['lam_iso']}"
         f"_la{cfg['lam_align']}"
-        f"_lb{cfg['lam_batch']}"
+        f"_be{cfg['batch_embed_dim']}"
         f"_bpr{cfg['beta_private_rna']}"
         f"_bpa{cfg['beta_private_atac']}"
         f"{sb}"
@@ -257,7 +257,7 @@ def train_one(cfg: dict, args: argparse.Namespace,
         "--beta-shared",      str(cfg["beta_shared"]),
         "--lam-iso",          str(cfg["lam_iso"]),
         "--lam-align",        str(cfg["lam_align"]),
-        "--lam-batch",        str(cfg["lam_batch"]),
+        "--batch-embed-dim",  str(cfg["batch_embed_dim"]),
         "--beta-private-rna", str(cfg["beta_private_rna"]),
         "--beta-private-atac",str(cfg["beta_private_atac"]),
     ]
@@ -355,7 +355,8 @@ def write_summary(out_dir: Path, trials: list[dict]) -> None:
     df = pd.DataFrame(rows)
     cols_first = ["trial_id", "mode", "Total", "Bio conservation",
                   "Batch correction", "Modality integration",
-                  "lam_align", "lam_batch"]
+                  "shared_dim", "private_dim", "batch_embed_dim",
+                  "beta_shared", "lam_iso", "lam_align"]
     rest = [c for c in df.columns if c not in cols_first]
     df = df[cols_first + rest].sort_values("Total", ascending=False)
     summary_path = out_dir / "summary.tsv"

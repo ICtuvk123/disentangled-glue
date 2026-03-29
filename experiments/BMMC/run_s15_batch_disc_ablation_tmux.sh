@@ -110,6 +110,35 @@ preprocess_once() {
         --preprocess-only
 }
 
+supports_lam_batch() {
+    "$PYTHON_BIN" "$SCRIPT_DIR/s02_glue_rna_atac.py" --help 2>&1 | grep -q -- '--lam-batch'
+}
+
+check_lam_batch_compat() {
+    local lam_count
+    local raw
+    local trimmed
+
+    if supports_lam_batch; then
+        return 0
+    fi
+
+    IFS=',' read -r -a raw <<< "$LAM_BATCH_VALUES"
+    lam_count=0
+    for trimmed in "${raw[@]}"; do
+        trimmed="$(trim "$trimmed")"
+        if [[ -n "$trimmed" ]]; then
+            lam_count=$((lam_count + 1))
+        fi
+    done
+
+    if (( lam_count > 1 )); then
+        echo "ERROR: current s02_glue_rna_atac.py no longer supports --lam-batch." >&2
+        echo "ERROR: set LAM_BATCH_VALUES to a single value (recommended: 0)." >&2
+        exit 1
+    fi
+}
+
 formal_eval() {
     local run_dir="$1"
     local tag="$2"
@@ -129,10 +158,17 @@ formal_eval() {
 
 worker_mode() {
     local worker_id="$1"
+    local lam_batch_supported=0
     mkdir -p "$BASE_OUT" "$LOG_DIR" "$EVAL_DIR"
     exec > >(tee -a "$LOG_DIR/gpu${worker_id}.log") 2>&1
 
     export CUDA_VISIBLE_DEVICES="$worker_id"
+
+    if supports_lam_batch; then
+        lam_batch_supported=1
+    else
+        echo "INFO: current s02_glue_rna_atac.py does not support --lam-batch; LAM_BATCH_VALUES is used only for run tagging."
+    fi
 
     IFS=',' read -r -a lam_batches <<< "$LAM_BATCH_VALUES"
     local first_run=1
@@ -202,13 +238,15 @@ PY
                 --beta-shared "$BETA_SHARED"
                 --lam-iso "$LAM_ISO"
                 --lam-align "$LAM_ALIGN"
-                --lam-batch "$lam_batch"
                 --beta-private-rna "$BETA_PRIVATE_RNA"
                 --beta-private-atac "$BETA_PRIVATE_ATAC"
                 --bedtools "$BEDTOOLS"
                 --batch-key "$BATCH_KEY"
                 --skip-modality-h5ad
             )
+            if [[ "$lam_batch_supported" == "1" ]]; then
+                cmd+=(--lam-batch "$lam_batch")
+            fi
             if [[ "$SHARED_BATCHES" == "1" ]]; then
                 cmd+=(--shared-batches)
             fi
@@ -342,6 +380,7 @@ PY
 launch_mode() {
     local gpu_id worker_cmd monitor_cmd
     check_inputs
+    check_lam_batch_compat
     mkdir -p "$BASE_OUT" "$LOG_DIR" "$EVAL_DIR"
     preprocess_once
 

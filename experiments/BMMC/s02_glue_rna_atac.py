@@ -47,6 +47,12 @@ def parse_args() -> argparse.Namespace:
         help="SCGLUE variant to train",
     )
     parser.add_argument(
+        "--prob-model",
+        default="NB",
+        choices=["NB", "Normal", "ZINormal", "ZINB", "Bernoulli"],
+        help="Probability model for data decoders (use Normal for log-normalized data)",
+    )
+    parser.add_argument(
         "--paired",
         action="store_true",
         help="Use obs_names to align matched cells",
@@ -80,6 +86,12 @@ def parse_args() -> argparse.Namespace:
         help="Per-modality private latent dimensionality (disentangled model only)",
     )
     parser.add_argument(
+        "--batch-embed-dim",
+        type=int,
+        default=8,
+        help="Batch embedding dimensionality used by the disentangled decoder",
+    )
+    parser.add_argument(
         "--beta-shared",
         type=float,
         default=4.0,
@@ -97,12 +109,7 @@ def parse_args() -> argparse.Namespace:
         default=0.05,
         help="Adversarial alignment weight",
     )
-    parser.add_argument(
-        "--lam-batch",
-        type=float,
-        default=0.0,
-        help="Batch adversarial weight on the shared latent space",
-    )
+
     parser.add_argument(
         "--beta-private",
         type=float,
@@ -194,6 +201,21 @@ def ensure_hvg(adata: ad.AnnData, modality: str) -> None:
         raise ValueError(f"{modality}.var['highly_variable'] is required")
 
 
+def auto_mark_atac_hvg(atac: ad.AnnData, n_top_features: int = 30000) -> None:
+    if "highly_variable" in atac.var:
+        return
+    import scipy.sparse
+    X = atac.X
+    if scipy.sparse.issparse(X):
+        mean_acc = np.asarray(X.mean(axis=0)).ravel()
+    else:
+        mean_acc = X.mean(axis=0)
+    ranked = np.argsort(mean_acc)[::-1]
+    mask = np.zeros(atac.n_vars, dtype=bool)
+    mask[ranked[:n_top_features]] = True
+    atac.var["highly_variable"] = mask
+
+
 def auto_mark_rna_hvg(rna: ad.AnnData) -> None:
     if "highly_variable" in rna.var:
         return
@@ -283,7 +305,7 @@ def configure_datasets(
     }
     scglue.models.configure_dataset(
         rna,
-        "NB",
+        args.prob_model,
         use_highly_variable=True,
         use_layer=args.rna_layer,
         use_rep="X_pca",
@@ -291,7 +313,7 @@ def configure_datasets(
     )
     scglue.models.configure_dataset(
         atac,
-        "NB",
+        args.prob_model,
         use_highly_variable=True,
         use_layer=args.atac_layer,
         use_rep="X_lsi",
@@ -331,6 +353,7 @@ def train_glue(
         init_kws.pop("latent_dim")
         init_kws["shared_dim"] = args.shared_dim
         init_kws["private_dim"] = args.private_dim
+        init_kws["batch_embed_dim"] = args.batch_embed_dim
         fallback = args.beta_private if args.beta_private is not None else 1.0
         beta_private = {
             "rna":  args.beta_private_rna  if args.beta_private_rna  is not None else fallback,
@@ -342,7 +365,6 @@ def train_glue(
                 "beta_private": beta_private,
                 "lam_iso":      args.lam_iso,
                 "lam_align":    args.lam_align,
-                "lam_batch":    args.lam_batch,
             }
         )
     else:
@@ -426,6 +448,7 @@ def main() -> None:
         ensure_layer(rna, args.rna_layer)
         ensure_layer(atac, args.atac_layer)
         auto_mark_rna_hvg(rna)
+        auto_mark_atac_hvg(atac)
         ensure_hvg(rna, "rna")
         ensure_hvg(atac, "atac")
         ensure_obs_names_unique({"rna": rna, "atac": atac})

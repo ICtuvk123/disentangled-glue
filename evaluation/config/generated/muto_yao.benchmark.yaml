@@ -1,0 +1,268 @@
+use:
+- benchmark
+dataset:
+  Muto-2021:
+    rna: ../data/dataset/Muto-2021-RNA.h5ad
+    atac: ../data/dataset/Muto-2021-ATAC.h5ad
+    frags2rna: ../data/dataset/Muto-2021-FRAGS2RNA.h5ad
+    paired: false
+  Yao-2021:
+    rna: ../data/dataset/Yao-2021-RNA.h5ad
+    atac: ../data/dataset/Yao-2021-ATAC.h5ad
+    frags2rna: ../data/dataset/Yao-2021-FRAGS2RNA.h5ad
+    paired: false
+timeout: 24h
+hyperparam:
+  data: null
+  prior:
+    gene_region: combined
+    extend_range: 0
+    corrupt_rate: 0.0
+    corrupt_seed: 0
+  method:
+    GLUE:
+      dim:
+        default: 50
+        choices:
+        - 10
+        - 30
+        - 50
+        - 100
+        - 200
+      alt_dim:
+        default: 100
+        choices:
+        - 30
+        - 50
+        - 100
+        - 200
+        - 400
+      hidden_depth:
+        default: 2
+        choices:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+      hidden_dim:
+        default: 256
+        choices:
+        - 64
+        - 128
+        - 256
+        - 512
+        - 1024
+      dropout:
+        default: 0.2
+        choices:
+        - 0.0
+        - 0.1
+        - 0.2
+        - 0.3
+        - 0.5
+      lam_graph:
+        default: 0.02
+        choices:
+        - 0.001
+        - 0.005
+        - 0.02
+        - 0.1
+        - 0.5
+      lam_align:
+        default: 0.05
+        choices:
+        - 0.002
+        - 0.01
+        - 0.05
+        - 0.2
+        - 1.0
+      neg_samples:
+        default: 10
+        choices:
+        - 2
+        - 5
+        - 10
+        - 20
+        - 50
+  seed: 4
+hvg:
+  data:
+    hvg:
+    - 500
+    - 1000
+    - 2000
+    - 4000
+    - 8000
+  prior:
+    gene_region: combined
+    extend_range: 0
+    corrupt_rate: 0.0
+    corrupt_seed: 0
+  method:
+    GLUE:
+      dim: 50
+      alt_dim: 100
+      hidden_depth: 2
+      hidden_dim: 256
+      dropout: 0.2
+      lam_graph: 0.02
+      lam_align: 0.05
+      neg_samples: 10
+  seed: 8
+benchmark:
+  data: null
+  prior:
+    gene_region: combined
+    extend_range: 0
+    corrupt_rate: 0.0
+    corrupt_seed: 0
+  method:
+    GLUE:
+      dim: 50
+      alt_dim: 100
+      hidden_depth: 2
+      hidden_dim: 256
+      dropout: 0.2
+      lam_graph: 0.02
+      lam_align: 0.05
+      neg_samples: 10
+  seed: 8
+benchmark_noprep:
+  data: null
+  prior:
+    gene_region: combined
+    extend_range: 0
+    corrupt_rate: 0.0
+    corrupt_seed: 0
+  method:
+    UnionCom: null
+    Pamona: null
+    MMD_MA: null
+    iNMF: null
+    iNMF_FiG: null
+    LIGER: null
+    LIGER_FiG: null
+    Harmony: null
+    bindSC: null
+    CCA_anchor: null
+    GLUE:
+      dim: 50
+      alt_dim: 0
+      hidden_depth: 2
+      hidden_dim: 256
+      dropout: 0.2
+      lam_graph: 0.02
+      lam_align: 0.05
+      neg_samples: 10
+  seed: 8
+prior_corrupt:
+  data: null
+  prior:
+    gene_region: combined
+    extend_range: 0
+    corrupt_rate:
+    - 0.2
+    - 0.4
+    - 0.6
+    - 0.8
+    - 0.9
+    - 1.0
+    corrupt_seed: 8
+  method:
+    iNMF: null
+    LIGER: null
+    Harmony: null
+    bindSC: null
+    CCA_anchor: null
+    GLUE:
+      dim: 50
+      alt_dim: 100
+      hidden_depth: 2
+      hidden_dim: 256
+      dropout: 0.2
+      lam_graph: 0.02
+      lam_align: 0.05
+      neg_samples: 10
+  seed: 1
+prior_alt:
+  data: null
+  prior:
+    gene_region:
+    - combined
+    - promoter
+    extend_range:
+    - 0
+    - 150000
+    corrupt_rate: 0.0
+    corrupt_seed: 0
+  method:
+    iNMF: null
+    LIGER: null
+    Harmony: null
+    bindSC: null
+    CCA_anchor: null
+    GLUE:
+      dim: 50
+      alt_dim: 100
+      hidden_depth: 2
+      hidden_dim: 256
+      dropout: 0.2
+      lam_graph: 0.02
+      lam_align: 0.05
+      neg_samples: 10
+  seed: 8
+subsample:
+  data:
+    subsample_size:
+    - 250
+    - 500
+    - 1000
+    - 2000
+    - 4000
+    - 8000
+    subsample_seed: 8
+  prior:
+    gene_region: combined
+    extend_range: 0
+    corrupt_rate: 0.0
+    corrupt_seed: 0
+  method:
+    UnionCom: null
+    Pamona: null
+    MMD_MA: null
+    iNMF: null
+    iNMF_FiG: null
+    LIGER: null
+    LIGER_FiG: null
+    Harmony: null
+    bindSC: null
+    CCA_anchor: null
+    GLUE:
+      dim: 50
+      alt_dim: 100
+      hidden_depth: 2
+      hidden_dim: 256
+      dropout: 0.2
+      lam_graph: 0.02
+      lam_align: 0.05
+      neg_samples: 10
+  seed: 1
+feature:
+  data: null
+  prior:
+    gene_region: combined
+    extend_range: 0
+    corrupt_rate: 0.0
+    corrupt_seed: 0
+  method:
+    GLUE:
+      dim: 50
+      alt_dim: 100
+      hidden_depth: 2
+      hidden_dim: 256
+      dropout: 0.2
+      lam_graph: 0.02
+      lam_align: 0.05
+      neg_samples: 10
+  seed: 8

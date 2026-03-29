@@ -364,7 +364,6 @@ class SCGLUETrainer(GLUETrainer):
         losses = {
             "dsc_loss": dsc_loss,
             "modality_dsc_loss": modality_dsc_loss,
-            "batch_dsc_loss": batch_dsc_loss,
             "vae_loss": vae_loss,
             "gen_loss": gen_loss,
             "g_nll": g_nll,
@@ -688,7 +687,6 @@ class PairedSCGLUETrainer(SCGLUETrainer):
         losses = {
             "dsc_loss": dsc_loss,
             "modality_dsc_loss": modality_dsc_loss,
-            "batch_dsc_loss": batch_dsc_loss,
             "vae_loss": vae_loss,
             "gen_loss": gen_loss,
             "g_nll": g_nll,
@@ -1532,12 +1530,10 @@ class DisentangledSCGLUE(SCGLUE):
         u2c: Optional[sc.Classifier] = None,
         shared_dim: int = 30,
         private_dim: int = 20,
-        db: Optional[sc.Discriminator] = None,
     ) -> None:
         super().__init__(g2v, v2g, x2u, u2x, idx, du, prior, u2c)
         self.shared_dim = shared_dim
         self.private_dim = private_dim
-        self.db = db.to(self.device) if db is not None else None
 
 
 @logged
@@ -1583,7 +1579,6 @@ class DisentangledSCGLUETrainer(SCGLUETrainer):
         beta_private: Union[float, Mapping[str, float]] = None,
         lam_graph: float = None,
         lam_align: float = None,
-        lam_batch: float = None,
         lam_sup: float = None,
         lam_iso: float = None,
         dsc_steps: int = None,
@@ -1613,12 +1608,7 @@ class DisentangledSCGLUETrainer(SCGLUETrainer):
             **kwargs,
         )
         self.beta_shared = beta_shared
-        self.lam_batch = lam_batch if lam_batch is not None else 0.0
         self.lam_iso = lam_iso if lam_iso is not None else 0.0
-        if getattr(net, "db", None) is not None:
-            self.dsc_optim = getattr(torch.optim, optim)(
-                chain(net.du.parameters(), net.db.parameters()), lr=self.lr, **kwargs
-            )
         # Normalise beta_private to a per-modality dict
         if isinstance(beta_private, Mapping):
             self.beta_private: Mapping[str, float] = dict(beta_private)
@@ -1666,14 +1656,7 @@ class DisentangledSCGLUETrainer(SCGLUETrainer):
             net.du(u_cat, xbch_cat), xflag_cat, reduction="none"
         )
         modality_dsc_loss = (modality_dsc_loss * xdwt_cat).sum() / xdwt_cat.numel()
-        if getattr(net, "db", None) is not None and self.lam_batch > 0:
-            batch_dsc_loss = F.cross_entropy(
-                net.db(u_cat, torch.zeros(xbch_cat.shape, dtype=xbch_cat.dtype, device=u_cat.device)), xbch_cat, reduction="none"
-            )
-            batch_dsc_loss = (batch_dsc_loss * xdwt_cat).sum() / xdwt_cat.numel()
-        else:
-            batch_dsc_loss = torch.tensor(0.0, device=net.device)
-        dsc_loss = self.lam_align * modality_dsc_loss + self.lam_batch * batch_dsc_loss
+        dsc_loss = self.lam_align * modality_dsc_loss
         if dsc_only:
             return {"dsc_loss": dsc_loss}
 
@@ -1771,7 +1754,6 @@ class DisentangledSCGLUETrainer(SCGLUETrainer):
         losses = {
             "dsc_loss": dsc_loss,
             "modality_dsc_loss": modality_dsc_loss,
-            "batch_dsc_loss": batch_dsc_loss,
             "vae_loss": vae_loss,
             "gen_loss": gen_loss,
             "g_nll": g_nll,
@@ -1840,6 +1822,7 @@ class DisentangledSCGLUEModel(SCGLUEModel):
         dropout: float = 0.2,
         disc_norm: bool = False,
         shared_batches: bool = False,
+        batch_embed_dim: int = 8,
         random_seed: int = 0,
     ) -> None:
         self.vertices = pd.Index(vertices)
@@ -1896,6 +1879,7 @@ class DisentangledSCGLUEModel(SCGLUEModel):
                 len(data_config["features"]),
                 private_dim=private_dim,
                 n_batches=max(data_config["batches"].size, 1),
+                batch_embed_dim=batch_embed_dim,
             )
             all_ct = all_ct.union(
                 set()
@@ -1930,15 +1914,6 @@ class DisentangledSCGLUEModel(SCGLUEModel):
             dropout=dropout,
             norm=disc_norm,
         )
-        db = None if db_out_features == 0 else sc.Discriminator(
-            shared_dim,
-            db_out_features,
-            n_batches=0,
-            h_depth=h_depth,
-            h_dim=h_dim,
-            dropout=dropout,
-            norm=disc_norm,
-        )
         prior = sc.Prior()
         # Call Model.__init__ directly (bypass SCGLUEModel.__init__)
         Model.__init__(
@@ -1953,7 +1928,6 @@ class DisentangledSCGLUEModel(SCGLUEModel):
             u2c=None if all_ct.empty else sc.Classifier(shared_dim, all_ct.size),
             shared_dim=shared_dim,
             private_dim=private_dim,
-            db=db,
         )
 
     def compile(  # pylint: disable=arguments-differ
@@ -1963,7 +1937,6 @@ class DisentangledSCGLUEModel(SCGLUEModel):
         beta_private: Union[float, Mapping[str, float]] = 1.0,
         lam_graph: float = 0.02,
         lam_align: float = 0.05,
-        lam_batch: float = 0.0,
         lam_sup: float = 0.02,
         lam_iso: float = 0.0,
         dsc_steps: int = 1,
@@ -1989,8 +1962,6 @@ class DisentangledSCGLUEModel(SCGLUEModel):
             Graph weight
         lam_align
             Adversarial alignment weight
-        lam_batch
-            Batch adversarial weight on the shared latent embedding
         lam_sup
             Cell type supervision weight
         lam_iso
@@ -2022,7 +1993,6 @@ class DisentangledSCGLUEModel(SCGLUEModel):
             beta_private=beta_private,
             lam_graph=lam_graph,
             lam_align=lam_align,
-            lam_batch=lam_batch,
             lam_sup=lam_sup,
             lam_iso=lam_iso,
             dsc_steps=dsc_steps,
