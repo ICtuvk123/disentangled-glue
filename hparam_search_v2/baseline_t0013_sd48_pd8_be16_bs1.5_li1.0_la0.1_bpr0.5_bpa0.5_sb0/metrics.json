@@ -1,0 +1,20 @@
+{
+  "isolated_labels": 0.672606885433197,
+  "nmi_ari_cluster_labels_kmeans_nmi": 0.7523207014428179,
+  "nmi_ari_cluster_labels_kmeans_ari": 0.5764698260759044,
+  "silhouette_label": 0.6685377210378647,
+  "clisi_knn": 0.999999980131785,
+  "silhouette_batch_b": 0.9068438410758972,
+  "ilisi_knn_b": 0.4217272996902466,
+  "kbet_per_label_b": 0.31967252410937314,
+  "pcr_comparison_b": 0.013339403279756003,
+  "silhouette_batch_m": 0.847381591796875,
+  "ilisi_knn_m": 0.5169968605041504,
+  "kbet_per_label_m": 0.346754640820007,
+  "graph_connectivity": 0.9302656177788753,
+  "pcr_comparison_m": 0.9896584333698096,
+  "Batch correction": 0.41539576703881825,
+  "Bio conservation": 0.7339870228243137,
+  "Modality integration": 0.7262114288539434,
+  "Total": 0.636076967897554
+}
