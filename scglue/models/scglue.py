@@ -361,6 +361,7 @@ class SCGLUETrainer(GLUETrainer):
         )
         gen_loss = vae_loss - dsc_loss
 
+        modality_dsc_loss = dsc_loss
         losses = {
             "dsc_loss": dsc_loss,
             "modality_dsc_loss": modality_dsc_loss,
@@ -684,6 +685,7 @@ class PairedSCGLUETrainer(SCGLUETrainer):
         )
         gen_loss = vae_loss - dsc_loss
 
+        modality_dsc_loss = dsc_loss
         losses = {
             "dsc_loss": dsc_loss,
             "modality_dsc_loss": modality_dsc_loss,

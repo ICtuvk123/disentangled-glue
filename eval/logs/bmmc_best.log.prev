@@ -1,0 +1,106 @@
+/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/torch/cuda/__init__.py:56: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/torch/cuda/__init__.py:56: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+Traceback (most recent call last):
+  File "/data1/users/zhutianci/proj/disentangled-glue/experiments/BMMC/s02_glue.py", line 483, in <module>
+    main()
+  File "/data1/users/zhutianci/proj/disentangled-glue/experiments/BMMC/s02_glue.py", line 448, in main
+    prot = sc.read(pp / "prot_pp.h5ad")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/legacy_api_wrap/__init__.py", line 88, in fn_compatible
+    return fn(*args_all, **kw)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/scanpy/readwrite.py", line 145, in read
+    return _read(
+           ^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/scanpy/readwrite.py", line 771, in _read
+    return read_h5ad(filename, backed=backed)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/h5ad.py", line 258, in read_h5ad
+    adata = read_dispatched(f, callback=callback)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/experimental/_dispatch_io.py", line 42, in read_dispatched
+    return reader.read_elem(elem)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/utils.py", line 211, in func_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/specs/registry.py", line 275, in read_elem
+    return self.callback(read_func, elem.name, elem, iospec=iospec)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/h5ad.py", line 239, in callback
+    **{
+      ^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/h5ad.py", line 242, in <dictcomp>
+    k: read_dispatched(elem[k], callback)
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/experimental/_dispatch_io.py", line 42, in read_dispatched
+    return reader.read_elem(elem)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/utils.py", line 211, in func_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/specs/registry.py", line 275, in read_elem
+    return self.callback(read_func, elem.name, elem, iospec=iospec)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/h5ad.py", line 256, in callback
+    return func(elem)
+           ^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/specs/methods.py", line 335, in read_mapping
+    return {k: _reader.read_elem(v) for k, v in elem.items()}
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/specs/methods.py", line 335, in <dictcomp>
+    return {k: _reader.read_elem(v) for k, v in elem.items()}
+               ^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/utils.py", line 211, in func_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/specs/registry.py", line 275, in read_elem
+    return self.callback(read_func, elem.name, elem, iospec=iospec)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/h5ad.py", line 256, in callback
+    return func(elem)
+           ^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/specs/methods.py", line 335, in read_mapping
+    return {k: _reader.read_elem(v) for k, v in elem.items()}
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/specs/methods.py", line 335, in <dictcomp>
+    return {k: _reader.read_elem(v) for k, v in elem.items()}
+               ^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/utils.py", line 211, in func_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/specs/registry.py", line 275, in read_elem
+    return self.callback(read_func, elem.name, elem, iospec=iospec)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/h5ad.py", line 256, in callback
+    return func(elem)
+           ^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/specs/methods.py", line 335, in read_mapping
+    return {k: _reader.read_elem(v) for k, v in elem.items()}
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/specs/methods.py", line 335, in <dictcomp>
+    return {k: _reader.read_elem(v) for k, v in elem.items()}
+               ^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/utils.py", line 211, in func_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/specs/registry.py", line 272, in read_elem
+    read_func = self.registry.get_read(type(elem), iospec, modifiers, reader=self)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/anndata/_io/specs/registry.py", line 167, in get_read
+    raise IORegistryError._from_read_parts(
+anndata._io.specs.registry.IORegistryError: No read method registered for IOSpec(encoding_type='null', encoding_version='0.1.0') from <class 'h5py._hl.dataset.Dataset'>. You may need to update your installation of anndata.
+Error raised while reading key 'mask_var' of <class 'h5py._hl.dataset.Dataset'> from /uns/pca/params
+Reusing shared preprocessing from /data1/users/zhutianci/proj/disentangled-glue/experiments/BMMC/s11_long_search/preprocessed
+================================================================================
+baseline_t0088_sd48_pd8_bs0.75_li2.0_la0.3_bpr0.25_bpa1.0_bpp1.0
+================================================================================
+WARNING: training failed (exit 1)
+Traceback (most recent call last):
+  File "/data1/users/zhutianci/proj/disentangled-glue/eval/run_best_bmmc_trimodal.py", line 200, in <module>
+    main()
+  File "/data1/users/zhutianci/proj/disentangled-glue/eval/run_best_bmmc_trimodal.py", line 131, in main
+    raise RuntimeError("BMMC training failed")
+RuntimeError: BMMC training failed

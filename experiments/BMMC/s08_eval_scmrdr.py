@@ -34,10 +34,80 @@ import scanpy as sc
 import yaml
 
 
+def canonicalize_domain(value: object) -> str:
+    key = str(value).strip().lower()
+    mapping = {
+        "0": "rna",
+        "1": "atac",
+        "gex": "rna",
+        "rna": "rna",
+        "scrna-seq": "rna",
+        "sc rna-seq": "rna",
+        "atac": "atac",
+        "scatac-seq": "atac",
+        "sc atac-seq": "atac",
+    }
+    return mapping.get(key, key)
+
+
+def prefixed_obs_names(path: Path, domain: str) -> pd.Index:
+    adata = sc.read_h5ad(path, backed="r")
+    try:
+        return pd.Index([f"{domain}:{obs_name}" for obs_name in adata.obs_names])
+    finally:
+        adata.file.close()
+
+
+def load_modality_latents(
+    run_dir: Path, rna_path: Path, atac_path: Path, domain_key: str
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rna_glue_path = run_dir / "rna_glue.h5ad"
+    atac_glue_path = run_dir / "atac_glue.h5ad"
+    if rna_glue_path.exists() and atac_glue_path.exists():
+        rna_glue = sc.read(rna_glue_path)
+        atac_glue = sc.read(atac_glue_path)
+        return (
+            pd.DataFrame(rna_glue.obsm["X_glue"], index=rna_glue.obs_names),
+            pd.DataFrame(atac_glue.obsm["X_glue"], index=atac_glue.obs_names),
+        )
+
+    combined_path = run_dir / "combined_glue.h5ad"
+    if not combined_path.exists():
+        raise FileNotFoundError(
+            f"Missing {rna_glue_path.name}/{atac_glue_path.name} and {combined_path.name} under {run_dir}"
+        )
+
+    combined = sc.read(combined_path)
+    if "X_glue" not in combined.obsm:
+        raise KeyError(f"Missing X_glue in {combined_path}")
+    if domain_key not in combined.obs:
+        raise KeyError(f"Missing obs[{domain_key!r}] in {combined_path}")
+
+    obs_index = pd.Index(combined.obs_names)
+    def extract(domain: str, source_path: Path) -> pd.DataFrame:
+        desired = prefixed_obs_names(source_path, domain)
+        missing = desired.difference(obs_index)
+        if not missing.empty:
+            raise ValueError(
+                f"{combined_path.name} is missing {domain} cells required by {source_path.name}; "
+                f"first missing entries: {missing[:5].tolist()}"
+            )
+        subset = combined[desired].copy()
+        subset_domains = subset.obs[domain_key].map(canonicalize_domain).astype(str)
+        if not (subset_domains == domain).all():
+            bad = subset.obs_names[subset_domains != domain][:5].tolist()
+            raise ValueError(
+                f"{combined_path.name} contains cells with non-{domain} domain labels in the {domain} slice: {bad}"
+            )
+        return pd.DataFrame(subset.obsm["X_glue"], index=subset.obs_names.str.split(":", n=1).str[-1])
+
+    return extract("rna", rna_path), extract("atac", atac_path)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True,
-                        help="Run directory containing rna_glue.h5ad and atac_glue.h5ad")
+                        help="Run directory containing rna_glue.h5ad/atac_glue.h5ad or combined_glue.h5ad")
     parser.add_argument("--rna", required=True,
                         help="Path to the raw/full RNA h5ad used for training")
     parser.add_argument("--atac", required=True,
@@ -72,6 +142,16 @@ def ensure_rna_hvg(input_path: Path, output_path: Path) -> Path:
     return output_path
 
 
+def ensure_domain_obs(
+    input_path: Path, output_path: Path, domain_key: str, domain_value: str
+) -> Path:
+    adata = sc.read(input_path)
+    if domain_key not in adata.obs:
+        adata.obs[domain_key] = domain_value
+    adata.write(output_path, compression="gzip")
+    return output_path
+
+
 def main() -> None:
     args = parse_args()
     run_dir = Path(args.run_dir)
@@ -85,17 +165,13 @@ def main() -> None:
     atac_unirep_script = workflow_dir / "atac_unirep.py"
     cell_integration_script = workflow_dir / "cell_integration.py"
 
-    rna_glue = sc.read(run_dir / "rna_glue.h5ad")
-    atac_glue = sc.read(run_dir / "atac_glue.h5ad")
-
     rna_latent_csv = output_dir / f"{tag}_rna_latent.csv"
     atac_latent_csv = output_dir / f"{tag}_atac_latent.csv"
-    pd.DataFrame(rna_glue.obsm["X_glue"], index=rna_glue.obs_names).to_csv(
-        rna_latent_csv, header=False
+    rna_latent_df, atac_latent_df = load_modality_latents(
+        run_dir, Path(args.rna), Path(args.atac), args.domain_key
     )
-    pd.DataFrame(atac_glue.obsm["X_glue"], index=atac_glue.obs_names).to_csv(
-        atac_latent_csv, header=False
-    )
+    rna_latent_df.to_csv(rna_latent_csv, header=False)
+    atac_latent_df.to_csv(atac_latent_csv, header=False)
 
     rna_unirep_h5ad = output_dir / f"{tag}_rna_unirep.h5ad"
     atac_unirep_h5ad = output_dir / f"{tag}_atac_unirep.h5ad"
@@ -103,6 +179,12 @@ def main() -> None:
     metrics_json = output_dir / f"{tag}_metrics.json"
     metrics_tsv = output_dir / f"{tag}_metrics.tsv"
     rna_unirep_input = ensure_rna_hvg(Path(args.rna), output_dir / f"{tag}_rna_with_hvg.h5ad")
+    rna_unirep_input = ensure_domain_obs(
+        rna_unirep_input, output_dir / f"{tag}_rna_with_hvg_domain.h5ad", args.domain_key, "rna"
+    )
+    atac_unirep_input = ensure_domain_obs(
+        Path(args.atac), output_dir / f"{tag}_atac_with_domain.h5ad", args.domain_key, "atac"
+    )
 
     subprocess.check_call([
         args.python_bin, os.fspath(rna_unirep_script),
@@ -111,7 +193,7 @@ def main() -> None:
     ])
     subprocess.check_call([
         args.python_bin, os.fspath(atac_unirep_script),
-        "-i", args.atac,
+        "-i", os.fspath(atac_unirep_input),
         "-o", os.fspath(atac_unirep_h5ad),
     ])
     subprocess.check_call([

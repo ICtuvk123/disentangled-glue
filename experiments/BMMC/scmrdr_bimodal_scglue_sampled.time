@@ -1,0 +1,23 @@
+	Command being timed: "/data1/users/zhutianci/.conda/envs/scMRDR/bin/python /data1/users/zhutianci/proj/disentangled-glue/experiments/BMMC/s02_glue_rna_atac.py --rna /data1/users/zhutianci/proj/disentangled-glue/experiments/BMMC/s01_preprocessing/RNA_counts_qc_sampled.h5ad --atac /data1/users/zhutianci/proj/disentangled-glue/experiments/BMMC/s01_preprocessing/ATAC_counts_qc_sampled.h5ad --gtf /data1/users/zhutianci/proj/disentangled-glue/experiments/BMMC/gencode.v38.chr_patch_hapl_scaff.annotation.gtf --output-dir /data1/users/zhutianci/proj/disentangled-glue/experiments/BMMC/scmrdr_bimodal_scglue_sampled --model scglue --batch-key batch"
+	User time (seconds): 6284.02
+	System time (seconds): 48.45
+	Percent of CPU this job got: 455%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 23:09.48
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 6180268
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 10465402
+	Voluntary context switches: 707356
+	Involuntary context switches: 451982
+	Swaps: 0
+	File system inputs: 80
+	File system outputs: 4280536
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

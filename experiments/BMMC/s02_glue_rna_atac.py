@@ -19,11 +19,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--rna", required=True, help="Path to RNA h5ad")
     parser.add_argument("--atac", required=True, help="Path to ATAC h5ad")
-    parser.add_argument("--gtf", required=True, help="Path to GTF annotation file")
+    parser.add_argument(
+        "--gtf",
+        default=None,
+        help="Optional path to GTF annotation file. Required only when the RNA "
+             "input does not already contain complete gene coordinates.",
+    )
     parser.add_argument(
         "--output-dir",
         default="s02_glue_rna_atac",
         help="Output directory for preprocessed data and model artifacts",
+    )
+    parser.add_argument(
+        "--guidance",
+        default=None,
+        help="Optional path to an existing guidance graph (.graphml/.graphml.gz). "
+             "When provided, preprocessing will reuse this graph instead of rebuilding it.",
     )
     parser.add_argument(
         "--bedtools",
@@ -164,6 +175,12 @@ def parse_args() -> argparse.Namespace:
         help="Run preprocessing and graph construction only, then exit",
     )
     parser.add_argument(
+        "--subset-hvf",
+        action="store_true",
+        help="Subset RNA/ATAC features to highly-variable features before "
+             "building the guidance graph, matching the common GLUE notebook flow.",
+    )
+    parser.add_argument(
         "--preprocessed-dir",
         default=None,
         help="Load preprocessed h5ad and guidance graph from this directory, "
@@ -255,6 +272,13 @@ def filter_missing_coordinates(adata: ad.AnnData) -> ad.AnnData:
     return adata[:, keep].copy()
 
 
+def has_complete_coordinates(adata: ad.AnnData) -> bool:
+    required = {"chrom", "chromStart", "chromEnd"}
+    if not required.issubset(adata.var.columns):
+        return False
+    return not adata.var.loc[:, ["chrom", "chromStart", "chromEnd"]].isna().any(axis=1).any()
+
+
 def align_shared_batch_categories(adatas: dict[str, ad.AnnData], batch_key: str) -> None:
     """Coerce all modalities to share the same batch category vocabulary."""
     categories = pd.Index([])
@@ -274,12 +298,25 @@ def align_shared_batch_categories(adatas: dict[str, ad.AnnData], batch_key: str)
         adata.obs[batch_key] = pd.Categorical(values, categories=categories)
 
 
+def subset_to_hvf(rna: ad.AnnData, atac: ad.AnnData) -> tuple[ad.AnnData, ad.AnnData]:
+    rna = rna[:, rna.var["highly_variable"].to_numpy()].copy()
+    atac = atac[:, atac.var["highly_variable"].to_numpy()].copy()
+    return rna, atac
+
+
 def build_guidance_graph(
     rna: ad.AnnData,
     atac: ad.AnnData,
     args: argparse.Namespace,
 ) -> tuple:
-    scglue.data.get_gene_annotation(rna, gtf=args.gtf, gtf_by="gene_name")
+    if args.gtf:
+        scglue.data.get_gene_annotation(rna, gtf=args.gtf, gtf_by="gene_name")
+        remove_duplicate_var_columns(rna)
+    elif not has_complete_coordinates(rna):
+        raise ValueError(
+            "RNA input is missing complete gene coordinates and no --gtf was provided"
+        )
+
     remove_duplicate_var_columns(rna)
     parse_peak_coordinates(atac)
     remove_duplicate_var_columns(atac)
@@ -454,7 +491,12 @@ def main() -> None:
         ensure_obs_names_unique({"rna": rna, "atac": atac})
 
         prepare_representations(rna, atac)
-        rna, atac, guidance = build_guidance_graph(rna, atac, args)
+        if args.subset_hvf:
+            rna, atac = subset_to_hvf(rna, atac)
+        if args.guidance:
+            guidance = nx.read_graphml(args.guidance)
+        else:
+            rna, atac, guidance = build_guidance_graph(rna, atac, args)
 
         rna.write(output_dir / "rna_pp.h5ad", compression="gzip")
         atac.write(output_dir / "atac_pp.h5ad", compression="gzip")

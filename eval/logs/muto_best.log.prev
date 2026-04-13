@@ -1,0 +1,12 @@
+/data1/users/zhutianci/.conda/envs/scMRDR/lib/python3.11/site-packages/torch/cuda/__init__.py:56: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+Loading Muto preprocessed inputs from /data1/users/zhutianci/proj/disentangled-glue
+Traceback (most recent call last):
+  File "/data1/users/zhutianci/proj/disentangled-glue/eval/run_best_muto.py", line 133, in <module>
+    main()
+  File "/data1/users/zhutianci/proj/disentangled-glue/eval/run_best_muto.py", line 76, in main
+    rna, atac, guidance = hpo.load_preprocessed(profile)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/users/zhutianci/proj/disentangled-glue/experiments/hparam_search_v3.py", line 186, in load_preprocessed
+    raise FileNotFoundError(
+FileNotFoundError: Missing preprocessed files. Expected /data1/users/zhutianci/proj/disentangled-glue/rna_pp.h5ad, /data1/users/zhutianci/proj/disentangled-glue/atac_pp.h5ad, /data1/users/zhutianci/proj/disentangled-glue/guidance.graphml.gz
